@@ -1,3 +1,5 @@
+# Essentially a copy of change_contraints.jl from the GeneralQP package
+
 function remove_constraint!(data, idx::Int)
     constraint_idx = data.working_set[idx]
     ignored_constraints_add_row!(data, data.A[constraint_idx, :], data.b[constraint_idx])
