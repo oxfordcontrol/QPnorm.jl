@@ -35,7 +35,7 @@ mutable struct Data{T}
     ignored_set::Vector{Int}
 
     done::Bool
-    idx::Int
+    removal_idx::Int
 
     A_ignored::SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int}, Base.Slice{Base.OneTo{Int}}}, false}
     b_ignored::SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int}}, true}
@@ -118,6 +118,11 @@ function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, 
 end
 
 function iterate!(data::Data{T}) where{T}
+    if data.removal_idx > 0
+        remove_constraint!(data, data.removal_idx)
+        data.removal_idx = 0
+    end
+
     data.y = data.F.Z'*data.x  # Reduced free variable
     data.x0 = data.x - data.F.Z*data.y
     data.Zq = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q
@@ -140,8 +145,7 @@ function iterate!(data::Data{T}) where{T}
         add_constraint!(data, new_constraint)
     end
     if isnan(new_constraint) || data.F.m <= 1
-        idx = check_kkt!(data)
-        !data.done && idx <= length(data.working_set) && remove_constraint!(data, idx)
+        data.removal_idx = check_kkt!(data)
     end
     data.iteration += 1
 end
@@ -162,17 +166,17 @@ function check_kkt!(data)
     # data.residual = norm(g)
     data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; μ])
 
-    idx = NaN
-    if all(multipliers .>= 0)
-        data.λ .= 0
-        data.λ[data.working_set] .= λ
-        data.μ = μ
+    data.λ .= 0
+    data.λ[data.working_set] .= λ
+    data.μ = μ
+    if all(data.λ .>= 0)
         data.done = true
+        data.removal_idx = 0
     else
-        data.idx = argmin(multipliers)
+        data.removal_idx = argmin(λ)
     end
 
-    return data.idx
+    return data.removal_idx
 end
 
 function gradient_steps(data, max_iter=Inf)

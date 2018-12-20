@@ -29,7 +29,7 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
             # Thus we switch to the etrs_boundary algorithm
             update_data!(boundary_data, interior_data)
             data = boundary_data
-        elseif isa(data, Data) && data.idx > length(data.working_set)
+        elseif isa(data, Data) && data.μ < 0 && data.μ < minimum(data.λ)
             # The etrs_boundary algorithm is in a "stationary" point
             # with the most negative langrange multiplier being the
             # one for the constraint ‖x‖ = r
