@@ -1,6 +1,5 @@
 using LinearAlgebra
 using Arpack
-using TRS
 
 mutable struct Data{T}
     """
@@ -126,7 +125,7 @@ function iterate!(data::Data{T}) where{T}
     new_constraint = gradient_steps(data, 5)
 
     if isnan(new_constraint)
-        x_global, x_local, info = trs_boundary(data.F.ZPZ, data.Zq, norm(data.y); compute_local=true)
+        x_global, x_local, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y); compute_local=true)
         f0 = f(data, data.y); f0 += max(data.tolerance, data.tolerance*abs(f0))
         if isfeasible(data, x_global)
             data.y = x_global; data.trs_choice = 'g'
@@ -216,7 +215,7 @@ function solve_2d(data, d1, d2)
     if any(isnan.(P_2d)) || any(isnan.(q_2d)) || isnan(r)
         @show P_2d, q_2d, r
     end
-    y_g, y_l, info = trs_boundary_small(P_2d, q_2d, r; compute_local=true)
+    y_g, y_l, info = trs_robust(P_2d, q_2d, r; compute_local=true)
 
     new_constraint = NaN
     f0 = f_2d(y1, y2); f0 += max(data.tolerance, data.tolerance*abs(f0))

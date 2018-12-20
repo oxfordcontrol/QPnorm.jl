@@ -1,5 +1,6 @@
 using GeneralQP
-
+using Arpack
+using TRS
 
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
@@ -37,5 +38,22 @@ function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
         return y11, y12, y21, y22
     else
         return T(NaN), T(NaN), T(NaN), T(NaN)
+    end
+end
+
+function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) where T
+    n = length(q)
+    if n < 15
+        return trs_boundary_small(P, q, r; kwargs...)
+    else
+        try
+            return trs_boundary(P, q, r; kwargs...)
+        catch e
+            if isa(e, ARPACKException)
+                return trs_boundary_small(P, q, r; kwargs...)
+            else
+                throw(e)
+            end 
+        end
     end
 end
