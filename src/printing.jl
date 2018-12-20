@@ -1,10 +1,10 @@
 using Printf
 
-function print_header(data)
+function print_header(data::Data{T}) where T
     @printf("Iter \t  Objective  \t Inf Linear \t Inf Sphere \t Gradient res \t L/HS \t TRS \t AC\n")
 end
 
-function print_info(data)
+function print_info(data::Data{T}) where T
     @printf("%d \t  %.5e \t %.5e \t %.5e \t %s \t %d/%d \t %c \t %d\n",
         data.iteration,
         data.x'*data.F.P*data.x/2 + dot(data.q, data.x),

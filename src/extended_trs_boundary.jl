@@ -58,19 +58,33 @@ mutable struct Data{T}
     eigen_steps::Int
 
     function Data(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T},
-        r::T, x::Vector{T}; verbosity=1, printing_interval=50, tolerance=1e-10) where T
+        r::T, x::Vector{T}; kwargs...) where T
 
         m, n = size(A)
         working_set = findall((A*x - b)[:] .>= -1e-11)
         ignored_set = setdiff(1:m, working_set)
 
-        F = NullspaceHessian{T}(P, A[working_set, :]')
+        QR = UpdatableQR(A[working_set, :]')
         A_shuffled = zeros(T, m, n)
         l = length(ignored_set)
         A_shuffled[end-l+1:end, :] .= view(A, ignored_set, :)
         b_shuffled = zeros(T, m)
         b_shuffled[end-l+1:end] .= view(b, ignored_set)
 
+        Data(P, q, A, b, r, x,
+            QR, working_set, ignored_set,
+            A_shuffled, b_shuffled; kwargs...)
+    end
+
+    function Data(P::Matrix{T}, q::Vector{T},  A::Matrix{T}, b::Vector{T}, r::T, x::Vector{T},
+        QR::UpdatableQR{T}, working_set::Vector{Int}, ignored_set::Vector{Int},
+        A_shuffled::Matrix{T}, b_shuffled::Vector{T};
+        verbosity=1, printing_interval=50, tolerance=1e-10) where T
+
+        F = NullspaceHessian{T}(P, QR)
+        l = length(ignored_set)
+
+        m, n = size(A)
         λ = zeros(T, m);
 
         new{T}(x, zeros(T, 0), zeros(T, 0),
@@ -84,7 +98,7 @@ mutable struct Data{T}
     end
 end
 
-function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
+function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; kwargs...) where T
     data = Data(P, q, A, b, r, x)
 

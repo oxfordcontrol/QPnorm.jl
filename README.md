@@ -13,6 +13,7 @@ The solver can be installed by running
 ```
 add https://github.com/oxfordcontrol/GeneralQP.jl
 ```
+in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1).
 
 ## Usage
 Problems of the form
@@ -27,10 +28,10 @@ solve(P, q, A, b, r, x_init; kwargs) -> x
 ```
 with **inputs** (`T` is any real numerical type):
 
-* `P::Matrix{T}`: the quadratic of the cost;
+* `P::Matrix{T}`: the quadratic cost;
 * `q::Vector{T}`: the linear cost;
-* `A::Matrix{T}` and `b::AbstractVector{T}`: the constraints; and
-* `r::T` the radius;
+* `A::Matrix{T}` and `b::AbstractVector{T}`: the constraints;
+* `r::T` the radius; and
 * `x_init::Vector{T}`: the initial, [feasible](#obtaining-an-initial-feasible-point) point
 
 **keywords** (optional):
@@ -40,7 +41,7 @@ to `2` (most verbose). Note that setting `verbosity=2` affects the algorithm's p
 
 and **output** `x::Vector{T}`, the calculated optimizer.
 
-Constant norm problems
+### Constant norm problems
 ```
 minimize    ½x'Px + q'x
 subject to  ‖x‖ = r
