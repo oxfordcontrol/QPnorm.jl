@@ -1,5 +1,6 @@
 using LinearAlgebra
 using Arpack
+using LinearMaps
 
 mutable struct Data{T}
     """
@@ -61,6 +62,9 @@ mutable struct Data{T}
 
         m, n = size(A)
         working_set = findall((A*x - b)[:] .>= -1e-11)
+        if length(working_set) >= n
+            working_set = working_set[1:n-1]
+        end
         ignored_set = setdiff(1:m, working_set)
 
         QR = UpdatableQR(A[working_set, :]')
@@ -78,7 +82,7 @@ mutable struct Data{T}
     function Data(P::Matrix{T}, q::Vector{T},  A::Matrix{T}, b::Vector{T}, r::T, x::Vector{T},
         QR::UpdatableQR{T}, working_set::Vector{Int}, ignored_set::Vector{Int},
         A_shuffled::Matrix{T}, b_shuffled::Vector{T};
-        verbosity=1, printing_interval=50, tolerance=1e-10) where T
+        verbosity=1, printing_interval=50, tolerance=1e-11) where T
 
         F = NullspaceHessian{T}(P, QR)
         l = length(ignored_set)
@@ -99,7 +103,7 @@ end
 
 function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; kwargs...) where T
-    data = Data(P, q, A, b, r, x)
+    data = Data(P, q, A, b, r, x; kwargs...)
 
     if data.verbosity > 0
         print_header(data)
@@ -131,13 +135,12 @@ function iterate!(data::Data{T}) where{T}
 
     if isnan(new_constraint)
         x_global, x_local, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y); compute_local=true)
-        f0 = f(data, data.y); f0 += max(data.tolerance, data.tolerance*abs(f0))
-        if isfeasible(data, x_global)
-            data.y = x_global; data.trs_choice = 'g'
-        elseif !isempty(x_local) && f(data, x_local) <= f0 && isfeasible(data, x_local)
-            data.y = x_local; data.trs_choice = 'l'
-        else
-            new_constraint = gradient_steps(data)
+        new_constraint = move_towards_optimizer!(data, x_global)
+        if isnan(new_constraint) && norm(data.y - x_global)/norm(data.y) >= 1e-6
+            new_constraint = move_towards_optimizer!(data, x_local)
+            if isnan(new_constraint) && norm(data.y - x_local)/norm(data.y) >= 1e-6
+                new_constraint = gradient_steps(data)
+            end
         end
     end
     data.x = data.x0 + data.F.Z*data.y;
@@ -179,9 +182,23 @@ function check_kkt!(data)
     return data.removal_idx
 end
 
+function move_towards_optimizer!(data, x_global)
+    if isempty(x_global)
+        return NaN
+    end
+    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
+    d1 = data.y/norm(data.y)
+    d2 = project!(data.y - x_global)
+    d2 ./= norm(d2)
+
+    return solve_2d(data, d1, d2)
+end
+
 function gradient_steps(data, max_iter=Inf)
     n = length(data.y)
-
+    if n == 1
+        max_iter = 1
+    end
     new_constraint = NaN
     k = 0; h = 0
     while isnan(new_constraint) && k < max_iter
@@ -190,10 +207,6 @@ function gradient_steps(data, max_iter=Inf)
         if norm(g) > 1e-5 || isfinite(max_iter)
             d1 = data.y/norm(data.y)
             d2 = g/norm(g)
-            if any(isnan.(d2))
-                @show norm(project!(grad(data, data.y))), norm(grad(data, data.x0 + data.F.Z*data.y))
-                @show k
-            end
         else
             d1 = data.y/norm(data.y)
             d2 = minimum_tangent_eigenvector(data)
@@ -214,7 +227,13 @@ function solve_2d(data, d1, d2)
     r = sqrt(y1^2 + y2^2)
 
     f_2d, P_2d, q_2d = generate_2d_cost(data, d1, d2, x0)
-    isfeasible, a1, a2, b1 = generate_2d_feasibility(data, d1, d2, x0)
+    grad = P_2d*[y1; y2] + q_2d
+    if angle(y1, y2, grad[1], grad[2]) <= pi 
+        y2 = -y2
+        d2 = -d2
+        f_2d, P_2d, q_2d = generate_2d_cost(data, d1, d2, x0)
+    end
+    find_infeasible!, isfeasible, a1, a2, b1 = generate_2d_feasibility(data, d1, d2, x0, y1, y2)
 
     if any(isnan.(P_2d)) || any(isnan.(q_2d)) || isnan(r)
         @show P_2d, q_2d, r
@@ -228,26 +247,70 @@ function solve_2d(data, d1, d2)
     elseif !isempty(y_l) && f_2d(y_l[1], y_l[2]) <= f0 && isfeasible(y_l[1], y_l[2])
         y1 = y_l[1]; y2 = y_l[2]
     else
-        min_value = f0 
-        for i = 1:length(a1)
-            y11, y12, y21, y22 = circle_line_intersections(a1[i], a2[i], b1[i], r)
-            if f_2d(y11, y12) <= min_value && isfeasible(y11, y12)
-                y1 = y11; y2 = y12;
-                new_constraint = i
-                min_value = f_2d(y1, y2)
+        theta = find_closest_minimizer(y1, y2, y_g, y_l)
+        low = 0.0
+        high = theta
+
+        done = false
+        k = 0
+        # Binary Search
+        while !done
+            theta = low + (high - low)/2
+            violating_constraints = find_infeasible!(r*cos(theta), r*sin(theta))
+            if findlast(violating_constraints) != nothing
+                new_constraint = findlast(violating_constraints)
             end
-            if f_2d(y21, y22) <= min_value && isfeasible(y21, y22)
-                y1 = y21; y2 = y22;
-                new_constraint = i
-                min_value = f_2d(y1, y2)
+            if k > 80 # || sum(violating_constraints) == 1
+                done = true
+            elseif sum(violating_constraints) == 0
+                low = theta
+            else
+                high = theta
             end
+            k += 1
+            # @show low, high, sum(violating_constraints)
         end
-        # Solution must activate a new constraint as all of the minimisers are infeasible.
-        @assert !isnan(new_constraint) || debug_gradient_step(a1, a2, b1, r, y_l, y_g, f0, f_2d)
+
+        #y1 = r*cos(theta); y2 = r*sin(theta)
+        y11, y12, y21, y22 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b1[new_constraint], r)
+        if isfeasible(y11, y12)
+            if isfeasible(y21, y22)
+                if f_2d(y11, y12) <= f_2d(y21, y22)
+                    y1 = y11; y2 = y12
+                else
+                    y1 = y21; y2 = y22
+                end
+            else
+                y1 = y11; y2 = y12
+            end
+        else
+            y1 = y21; y2 = y22
+        end
     end
+    # @show f_2d(y1, y2), maximum(a1*y1+y2*a2 - b1)
     @. data.y = x0 + y1*d1 + y2*d2
 
     return new_constraint
+end
+
+function find_closest_minimizer(y1, y2, y_g, y_l)
+    theta_g = angle(y1, y2, y_g[1], y_g[2])
+    if isempty(y_l)
+        return theta_g
+    else
+        theta_l = angle(y1, y2, y_l[1], y_l[2])
+        min(theta_l, theta_g)
+    end
+end
+
+function angle(x1, x2, y1, y2)
+    dot = x1*x2 + y1*y2      # dot product between [x1, y1] and [x2, y2]
+    det = x1*y2 - y1*x2      # determinant
+    angle = atan(det, dot)  # atan2(y, x) or atan2(sin, cos))
+    if angle < 0
+        angle += 2*pi
+    end
+    return angle
 end
 
 function generate_2d_cost(data, d1, d2, x0)
@@ -276,7 +339,7 @@ function generate_2d_cost(data, d1, d2, x0)
     return f_2d, [P11 P12; P12 P22], [q1; q2]
 end
 
-function generate_2d_feasibility(data, d1, d2, x0)
+function generate_2d_feasibility(data, d1, d2, x0, y1, y2)
     """
     Returns a function handle isfeasible(y1, y2) that calculates the feasibility (true/false)
     of point on the plane defined by the two directions data.F.Z*d1 + data.F.Z*d2
@@ -292,17 +355,19 @@ function generate_2d_feasibility(data, d1, d2, x0)
     a1 = data.A_ignored*(data.F.Z*d1)
     a2 = data.A_ignored*(data.F.Z*d2)
 
+    tol = max(2*maximum(a1*y1 + a2*y2 - b1), data.tolerance)
+
     violating_constraints = Array{Bool}(undef, length(b1))
     function find_infeasible!(y1::T, y2::T) where{T}
         n = length(b1)
         @inbounds for i = 1:n
-            violating_constraints[i] = y1*a1[i] + y2*a2[i] - b1[i] >= data.tolerance
+            violating_constraints[i] = y1*a1[i] + y2*a2[i] - b1[i] >= tol
         end
-        return findfirst(violating_constraints)
+        return violating_constraints
     end
-    isfeasible(y1, y2) = (find_infeasible!(y1, y2) == nothing)
+    isfeasible(y1, y2) = (findfirst(find_infeasible!(y1, y2)) == nothing)
 
-    return isfeasible, a1, a2, b1
+    return find_infeasible!, isfeasible, a1, a2, b1
 end
 
 function minimum_tangent_eigenvector(data)
@@ -323,6 +388,7 @@ function minimum_tangent_eigenvector(data)
 end
 
 function isfeasible(data::Data{T}, x) where{T}
+    tol = max(2*maximum(data.A*data.x - data.b), data.tolerance)
     if length(x) == data.n
         return all(data.A*x - data.b .<= data.tolerance)
     elseif length(x) == data.F.m
@@ -334,7 +400,7 @@ end
 
 function f(data::Data{T}, x) where{T}
     if length(x) == data.n
-        return dot(x, data.P*x)/2 + dot(x, data.q)
+        return dot(x, data.F.P*x)/2 + dot(x, data.q)
     elseif length(x) == data.F.m
         return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq)
     else

@@ -23,7 +23,7 @@ function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     # [x1; x2 + a1] and [x2; x1 - a2] are two points in the plane
 
     D = x1*(x2 + a1) - x2*(x1 - a2)
-    if r >= D
+    if r >= abs(D)
         c = sqrt(r^2 - D^2)
 
         y11 = D*a1; y12 = D*a2
@@ -35,6 +35,7 @@ function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
         y11 += δ1; y12 += δ2
         y21 -= δ1; y22 -= δ2
 
+        # @show maximum(a1*y11 + a2*y12 - b), abs(norm([y11; y12]) - r)
         return y11, y12, y21, y22
     else
         return T(NaN), T(NaN), T(NaN), T(NaN)
@@ -50,6 +51,7 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) 
             return trs_boundary(P, q, r; kwargs...)
         catch e
             if isa(e, ARPACKException)
+                # @warn "Indirect EigenSolver failed"
                 return trs_boundary_small(P, q, r; kwargs...)
             else
                 throw(e)
