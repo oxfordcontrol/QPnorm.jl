@@ -138,7 +138,7 @@ function iterate!(data::Data{T}) where{T}
         new_constraint = move_towards_optimizer!(data, x_global)
         if isnan(new_constraint) && norm(data.y - x_global)/norm(data.y) >= 1e-6
             new_constraint = move_towards_optimizer!(data, x_local)
-            if isnan(new_constraint) && norm(data.y - x_local)/norm(data.y) >= 1e-6
+            if isnan(new_constraint) && (isempty(x_local) || norm(data.y - x_local)/norm(data.y) >= 1e-6)
                 new_constraint = gradient_steps(data)
             end
         end
@@ -204,7 +204,7 @@ function gradient_steps(data, max_iter=Inf)
     while isnan(new_constraint) && k < max_iter
         project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
         g = project!(grad(data, data.y))
-        if norm(g) > 1e-5 || isfinite(max_iter)
+        if norm(g) > 1e-6 || isfinite(max_iter)
             d1 = data.y/norm(data.y)
             d2 = g/norm(g)
         else
@@ -260,7 +260,7 @@ function solve_2d(data, d1, d2)
             if findlast(violating_constraints) != nothing
                 new_constraint = findlast(violating_constraints)
             end
-            if k > 80 # || sum(violating_constraints) == 1
+            if sum(violating_constraints) == 1 || k > 60
                 done = true
             elseif sum(violating_constraints) == 0
                 low = theta
@@ -268,10 +268,8 @@ function solve_2d(data, d1, d2)
                 high = theta
             end
             k += 1
-            # @show low, high, sum(violating_constraints)
         end
 
-        #y1 = r*cos(theta); y2 = r*sin(theta)
         y11, y12, y21, y22 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b1[new_constraint], r)
         if isfeasible(y11, y12)
             if isfeasible(y21, y22)
@@ -371,6 +369,7 @@ function generate_2d_feasibility(data, d1, d2, x0, y1, y2)
 end
 
 function minimum_tangent_eigenvector(data)
+    # @show data.y
     project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
     l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) # Approximate Lagrange multiplier
     function custom_mul!(y::AbstractVector, x::AbstractVector)
@@ -381,6 +380,8 @@ function minimum_tangent_eigenvector(data)
     L = LinearMap{Float64}(custom_mul!, data.F.m; ismutating=true, issymmetric=true)
     (λ_min, v_min, nconv, niter, nmult, resid) = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
 
+    @show λ_min
+    @show abs(dot(v_min, data.y))
     @assert λ_min[1] < 0 "Error: Either the problem is badly scaled or it belongs to the hard case."
     @assert abs(dot(v_min, data.y)) <= 1e-6 "Error: Either the problem is badly scaled or it belongs to the hard case."
 

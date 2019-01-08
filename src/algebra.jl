@@ -47,15 +47,30 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) 
     if n < 15
         return trs_boundary_small(P, q, r; kwargs...)
     else
+        # return trs_boundary(P, q, r; kwargs...)
         try
-            return trs_boundary(P, q, r; kwargs...)
+            x_g, x_l, info = trs_boundary(P, q, r; kwargs...)
+            #=
+            x_g1, x_l1, info1 = trs_boundary_small(P, q, r; kwargs...)
+            @show info
+            @show info1
+            @show norm(x_g - x_g1)
+            =#
+            return x_g, x_l, info
         catch e
-            if isa(e, ARPACKException)
-                # @warn "Indirect EigenSolver failed"
-                return trs_boundary_small(P, q, r; kwargs...)
+            if isa(e, LAPACKException)
+                try
+                    @warn "Error #1:", typeof(e), " - trying again"
+                    return trs_boundary(P, q, r; kwargs...)
+                catch
+                    #    @show e
+                    @warn "Error #2:", e, " - switching to direct"
+                    return trs_boundary_small(P, q, r; kwargs...)
+                end
             else
-                throw(e)
-            end 
+                @warn "Error:", e, " - switching to direct"
+                return trs_boundary_small(P, q, r; kwargs...)
+            end
         end
     end
 end
