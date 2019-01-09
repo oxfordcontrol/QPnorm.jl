@@ -4,6 +4,7 @@ module eTRS
 
 using LinearAlgebra
 using Polynomials
+using Pardiso
 
 include("algebra.jl")
 include("extended_trs_boundary.jl")

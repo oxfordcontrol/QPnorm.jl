@@ -1,6 +1,7 @@
 using LinearAlgebra
 using Arpack
 using LinearMaps
+using Polynomials
 
 mutable struct Data{T}
     """
@@ -9,27 +10,16 @@ mutable struct Data{T}
         subject to  Ax ≤ b
                     ‖x‖ = r
     with an active set algorithm.
-
-    The most important element is F, which holds
-    - F.QR:  an updatable QR factorization of the working constraints
-    - F.Z:   a view on an orthonormal matrix spanning the nullspace of the working constraints
-    - F.P:   the hessian of the problem
-    - F.ZPZ: equal to F.Z'*F.P*F.P, i.e. the reduced hessian
-
-    The Data structure also keeps matrices of the constraints not in the working set (A_ignored and b_ignored)
-    stored in a continuous manner. This allows efficient use of BLAS.
     """
     x::Vector{T}  # Variable of the minimization problem
-    y::Vector{T}  # Reduced variable on the nullspace of the working constraints
-    x0::Vector{T} # x - F.Z'*y
+    x0::Vector{T}
 
     n::Int  # length(x)
     m::Int  # Number of constraints
 
-    F::NullspaceHessian{T}  # See first comments on the definition of Data
+    P::AbstractMatrix{T}
     q::Vector{T}
-    Zq::Vector{T} # Reduced linear cost
-    A::Matrix{T}
+    A::AbstractMatrix{T}
     b::Vector{T}
     r::T
     working_set::Vector{Int}
@@ -38,10 +28,7 @@ mutable struct Data{T}
     done::Bool
     removal_idx::Int
 
-    A_ignored::SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int}, Base.Slice{Base.OneTo{Int}}}, false}
-    b_ignored::SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int}}, true}
-    A_shuffled::Matrix{T}  # That's where A_ignored "views into"
-    b_shuffled::Vector{T}  # That's where b_ignored "views into"
+    ps::MKLPardisoSolver
 
     # Options
     tolerance::T
@@ -57,7 +44,7 @@ mutable struct Data{T}
     grad_steps::Int
     eigen_steps::Int
 
-    function Data(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T},
+    function Data(P::AbstractMatrix{T}, q::Vector{T}, A::AbstractMatrix{T}, b::Vector{T},
         r::T, x::Vector{T}; kwargs...) where T
 
         m, n = size(A)
@@ -67,41 +54,80 @@ mutable struct Data{T}
         end
         ignored_set = setdiff(1:m, working_set)
 
-        QR = UpdatableQR(A[working_set, :]')
-        A_shuffled = zeros(T, m, n)
-        l = length(ignored_set)
-        A_shuffled[end-l+1:end, :] .= view(A, ignored_set, :)
-        b_shuffled = zeros(T, m)
-        b_shuffled[end-l+1:end] .= view(b, ignored_set)
-
-        Data(P, q, A, b, r, x,
-            QR, working_set, ignored_set,
-            A_shuffled, b_shuffled; kwargs...)
+        Data(P, q, A, b, r, x, working_set, ignored_set; kwargs...)
     end
 
-    function Data(P::Matrix{T}, q::Vector{T},  A::Matrix{T}, b::Vector{T}, r::T, x::Vector{T},
-        QR::UpdatableQR{T}, working_set::Vector{Int}, ignored_set::Vector{Int},
-        A_shuffled::Matrix{T}, b_shuffled::Vector{T};
+    function Data(P::AbstractMatrix{T}, q::Vector{T},  A::AbstractMatrix{T}, b::Vector{T}, r::T, x::Vector{T},
+        working_set::Vector{Int}, ignored_set::Vector{Int};
         verbosity=1, printing_interval=50, tolerance=1e-11) where T
-
-        F = NullspaceHessian{T}(P, QR)
-        l = length(ignored_set)
 
         m, n = size(A)
         λ = zeros(T, m);
 
-        new{T}(x, zeros(T, 0), zeros(T, 0),
-            n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set, false, 0,
-            view(A_shuffled, m-l+1:m, :),
-            view(b_shuffled, m-l+1:m),
-            A_shuffled, b_shuffled,
+        new{T}(x, zeros(T, 0), n, m, P, q, A, b, r, working_set, ignored_set, false, 0,
+            MKLPardisoSolver(),
             T(tolerance), verbosity, printing_interval,  # Options
             0, λ, 0, NaN, '-', 0, 0  # Logging
         )
     end
 end
 
-function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
+function solve_kkt_system!(x, y, data)
+    data.ps = MKLPardisoSolver()
+    A_active = data.A[data.working_set, :]
+    # A_active = data.A[data.working_set, :]
+    M = [[I A_active']; [A_active 1e-50*I]]
+
+    # set_matrixtype!(data.ps, -2) # real and symmetric indefinite
+    # set_phase!(data.ps, 12) # Analysis, numerical factorization
+    # pardiso(data.ps, y, M, x)
+    # set_phase!(data.ps, 33) # Solve, iterative refinement
+    # pardiso(data.ps, x, M, y)
+    solve!(data.ps, x, M, y)
+    # tmp = M\y
+    # copyto!(x, tmp)
+end
+
+function nullspace_projector!(data, x)
+    if length(data.working_set) == 0
+        return x
+    end
+    right_hand_side = [x; zeros(length(data.working_set))]
+    left_hand_side = similar(right_hand_side)
+    solve_kkt_system!(left_hand_side, right_hand_side, data)
+    copyto!(x, view(left_hand_side, 1:length(x)))
+    return x
+end
+
+function constraints_projector!(data, x)
+    if length(data.working_set) == 0
+        return x
+    end
+    right_hand_side = [x; data.b[data.working_set]]
+    left_hand_side = similar(right_hand_side)
+    data.ps = MKLPardisoSolver()
+    A_active = data.A[data.working_set, :]
+    M = [[I A_active']; [A_active 1e-30*I]]
+
+    #=
+    @show norm(A_active*x - data.b[data.working_set])
+    set_matrixtype!(data.ps, -2) # real and symmetric indefinite
+    set_msglvl!(data.ps, 1)
+    set_phase!(data.ps, 12) # Analysis, numerical factorization
+    pardiso(data.ps, right_hand_side, M, left_hand_side)
+    set_phase!(data.ps, 33) # Solve, iterative refinement
+    pardiso(data.ps, right_hand_side, M, left_hand_side)
+    copyto!(x, view(left_hand_side, 1:length(x)))
+    @show norm(A_active*x - data.b[data.working_set])
+    @show norm(left_hand_side)
+    =#
+    solve!(data.ps, left_hand_side, M, right_hand_side)
+    # left_hand_side = M\right_hand_side
+    # copyto!(x, view(left_hand_side, 1:length(x)))
+    return x
+end
+
+function solve_boundary(P::AbstractMatrix{T}, q::Vector{T}, A::AbstractMatrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; kwargs...) where T
     data = Data(P, q, A, b, r, x; kwargs...)
 
@@ -123,7 +149,10 @@ end
 
 function iterate!(data::Data{T}) where{T}
     if data.removal_idx > 0
-        remove_constraint!(data, data.removal_idx)
+        # remove_constraint!(data, data.removal_idx)
+        constraint_idx = data.working_set[data.removal_idx]
+        prepend!(data.ignored_set, constraint_idx)
+        deleteat!(data.working_set, data.removal_idx)
         data.removal_idx = 0
     end
 
@@ -134,44 +163,53 @@ function iterate!(data::Data{T}) where{T}
     new_constraint = gradient_steps(data, 5)
 
     if isnan(new_constraint)
-        x_global, x_local, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y); compute_local=true)
+        # ToDo: Change this
+        x_global, x_local, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.x); compute_local=true)
         new_constraint = move_towards_optimizer!(data, x_global)
-        if isnan(new_constraint) && norm(data.y - x_global)/norm(data.y) >= 1e-6
+        if isnan(new_constraint) && norm(data.x - x_global)/norm(data.x) >= 1e-6
             new_constraint = move_towards_optimizer!(data, x_local)
-            if isnan(new_constraint) && (isempty(x_local) || norm(data.y - x_local)/norm(data.y) >= 1e-6)
+            if isnan(new_constraint) && (isempty(x_local) || norm(data.x - x_local)/norm(data.x) >= 1e-6)
                 new_constraint = gradient_steps(data)
+            else
+                data.μ = info.λ[2]
             end
+        else
+            data.μ = info.λ[1]
         end
     end
-    data.x = data.x0 + data.F.Z*data.y;
     if !isnan(new_constraint)
-        add_constraint!(data, new_constraint)
+        # add_constraint!(data, new_constraint)
+        constraint_idx = data.ignored_set[new_constraint]
+        deleteat!(data.ignored_set, new_constraint)
+        append!(data.working_set, constraint_idx)
     end
-    if isnan(new_constraint) || data.F.m <= 1
+    if isnan(new_constraint) || length(data.ignored_set) <= 1
         data.removal_idx = check_kkt!(data)
     end
+
+    data.x = constraints_projector!(data, data.x)
+    d = nullspace_projector!(data, randn(data.n))
+    alpha = roots(Poly([norm(data.x)^2 - data.r^2, 2*d'*data.x, norm(d)^2]))
+    data.x += alpha[1]*d
+
     data.iteration += 1
 end
 
 function check_kkt!(data)
-    F = qr(data.F.Z'*data.x)
-    R = view(data.F.QR.R, 1:data.F.QR.m+1, 1:data.F.QR.m+1)
-    R[1:end-1, end] = data.F.QR.Q1'*data.x
-    R[end, end] = F.factors[1, 1]
-
     g = grad(data, data.x)
-    Qg = -[data.F.QR.Q1'*g; (F.Q'*(data.F.QR.Q2'*g))[1]]
-    multipliers = UpperTriangular(R)\Qg
+    g_ -= data.x*data.μ
+    right_hand_side = [g_; zeros(length(data.working_set))]
+    left_hand_side = similar(right_hand_side)
+    solve_kkt_system!(left_hand_side, right_hand_side, data)
+    λ = left_hand_side[length(g):end]
 
-    λ = multipliers[1:end-1]
-    μ = multipliers[end]
-    # g = grad(data, data.y);  g .-= (data.y/norm(data.y))*dot(g, data.y/norm(data.y))
+    # g = grad(data, data.x);  g .-= (data.x/norm(data.x))*dot(g, data.x/norm(data.x))
     # data.residual = norm(g)
-    data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; μ])
+    # ToDo: Change this?
+    data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; data.μ])
 
     data.λ .= 0
     data.λ[data.working_set] .= λ
-    data.μ = μ
     if all(data.λ .>= 0)
         data.done = true
         data.removal_idx = 0
@@ -183,32 +221,40 @@ function check_kkt!(data)
 end
 
 function move_towards_optimizer!(data, x_global)
+    @assert 1 > 2
     if isempty(x_global)
         return NaN
     end
-    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-    d1 = data.y/norm(data.y)
-    d2 = project!(data.y - x_global)
+    project!(x) = axpy!(-dot(x, data.x)/dot(data.x, data.x), data.x, x)
+    d1 = data.x/norm(data.x)
+    d2 = project!(data.x - x_global)
     d2 ./= norm(d2)
 
     return solve_2d(data, d1, d2)
 end
 
 function gradient_steps(data, max_iter=Inf)
-    n = length(data.y)
+    n = length(data.x)
     if n == 1
         max_iter = 1
     end
     new_constraint = NaN
     k = 0; h = 0
     while isnan(new_constraint) && k < max_iter
-        project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-        g = project!(grad(data, data.y))
+        # project!(x) = axpy!(-dot(x, data.x)/dot(data.x, data.x), data.x, x)
+        g = nullspace_projector!(data, grad(data, data.x))
+        # @show norm(g - project!(grad(data, data.x)))
+        # @show norm([data.A[data.working_set, :]; data.x']*g)
         if norm(g) > 1e-6 || isfinite(max_iter)
-            d1 = data.y/norm(data.y)
+            d1 = data.x/norm(data.x)
             d2 = g/norm(g)
+            #=
+            D = qr([d1 d2]).Q
+            d1 = D[:, 1]
+            d2 = D[:, 2]
+            =#
         else
-            d1 = data.y/norm(data.y)
+            d1 = data.x/norm(data.x)
             d2 = minimum_tangent_eigenvector(data)
             h += 1
         end
@@ -222,8 +268,8 @@ function gradient_steps(data, max_iter=Inf)
 end
 
 function solve_2d(data, d1, d2)
-    y1 = dot(data.y, d1); y2 = dot(data.y, d2)
-    x0 = data.y - d1*y1 - d2*y2
+    y1 = dot(data.x, d1); y2 = dot(data.x, d2)
+    x0 = data.x - d1*y1 - d2*y2
     r = sqrt(y1^2 + y2^2)
 
     f_2d, P_2d, q_2d = generate_2d_cost(data, d1, d2, x0)
@@ -260,7 +306,7 @@ function solve_2d(data, d1, d2)
             if findlast(violating_constraints) != nothing
                 new_constraint = findlast(violating_constraints)
             end
-            if sum(violating_constraints) == 1 || k > 60
+            if k > 100 # sum(violating_constraints) == 1 || k > 60
                 done = true
             elseif sum(violating_constraints) == 0
                 low = theta
@@ -286,7 +332,9 @@ function solve_2d(data, d1, d2)
         end
     end
     # @show f_2d(y1, y2), maximum(a1*y1+y2*a2 - b1)
-    @. data.y = x0 + y1*d1 + y2*d2
+    # @show norm(data.x - (x0 + y1*d1 + y2*d2))
+    # @show norm([data.A[data.working_set, :]; data.x']*g)
+    data.x = x0 + y1*d1 + y2*d2
 
     return new_constraint
 end
@@ -323,14 +371,14 @@ function generate_2d_cost(data, d1, d2, x0)
     The associated cost matrices P_2d and q_2d are also returned so that
     f_2d(y1, y2) = 1/2*[y1 y2]*P_2d*[y1; y2] + [y1 y2]*q_2d
     """
-    Pd1 = data.F.ZPZ*d1
+    Pd1 = data.P*d1
     P11 = dot(d1, Pd1)
-    q1 = dot(d1, data.Zq) + dot(Pd1, x0)
+    q1 = dot(d1, data.q) + dot(Pd1, x0)
 
-    Pd2 = data.F.ZPZ*d2
+    Pd2 = data.P*d2
     P22 = dot(d2, Pd2)
     P12 = dot(d1, Pd2)
-    q2 = dot(d2, data.Zq) + dot(Pd2, x0)
+    q2 = dot(d2, data.q) + dot(Pd2, x0)
 
     @inline f_2d(y1, y2) = (y1^2*P11 + y2^2*P22)/2 + y1*y2*P12 + y1*q1 + y2*q2
 
@@ -349,11 +397,11 @@ function generate_2d_feasibility(data, d1, d2, x0, y1, y2)
     Three vectors a1, a2, b1 are also returned that give:
     isfeasible(y1, y2) = all(y1*a1 + y2*a2 - b1 .< data.tolerance)
     """
-    b1 = data.b_ignored - data.A_ignored*(data.F.Z*x0 + data.x0)
-    a1 = data.A_ignored*(data.F.Z*d1)
-    a2 = data.A_ignored*(data.F.Z*d2)
+    b1 = (data.b - data.A*x0)[data.ignored_set]
+    a1 = (data.A*d1)[data.ignored_set]
+    a2 = (data.A*d2)[data.ignored_set]
 
-    tol = max(2*maximum(a1*y1 + a2*y2 - b1), data.tolerance)
+    tol = max(1.2*maximum(a1*y1 + a2*y2 - b1), data.tolerance)
 
     violating_constraints = Array{Bool}(undef, length(b1))
     function find_infeasible!(y1::T, y2::T) where{T}
@@ -370,8 +418,8 @@ end
 
 function minimum_tangent_eigenvector(data)
     # @show data.y
-    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-    l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) # Approximate Lagrange multiplier
+    project!(x) = axpy!(-dot(x, data.x)/dot(data.x, data.x), data.x, x)
+    l = -(data.x'*(data.F.ZPZ*data.x)+data.Zq'*data.x)/dot(data.x, data.x) # Approximate Lagrange multiplier
     function custom_mul!(y::AbstractVector, x::AbstractVector)
         mul!(y, data.F.ZPZ, x)
         axpy!(l, x, y)
@@ -381,9 +429,9 @@ function minimum_tangent_eigenvector(data)
     (λ_min, v_min, nconv, niter, nmult, resid) = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
 
     @show λ_min
-    @show abs(dot(v_min, data.y))
+    @show abs(dot(v_min, data.x))
     @assert λ_min[1] < 0 "Error: Either the problem is badly scaled or it belongs to the hard case."
-    @assert abs(dot(v_min, data.y)) <= 1e-6 "Error: Either the problem is badly scaled or it belongs to the hard case."
+    @assert abs(dot(v_min, data.x)) <= 1e-6 "Error: Either the problem is badly scaled or it belongs to the hard case."
 
     return v_min[:, 1]/norm(v_min)
 end
@@ -401,9 +449,7 @@ end
 
 function f(data::Data{T}, x) where{T}
     if length(x) == data.n
-        return dot(x, data.F.P*x)/2 + dot(x, data.q)
-    elseif length(x) == data.F.m
-        return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq)
+        return dot(x, data.P*x)/2 + dot(x, data.q)
     else
         throw(DimensionMismatch)
     end
@@ -411,9 +457,7 @@ end
 
 function grad(data::Data{T}, x) where{T}
     if length(x) == data.n
-        return data.F.P*x + data.q
-    elseif length(x) == data.F.m
-        return data.F.ZPZ*x + data.Zq
+        return data.P*x + data.q
     else
         throw(DimensionMismatch)
     end
