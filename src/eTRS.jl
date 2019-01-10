@@ -5,6 +5,7 @@ module eTRS
 using LinearAlgebra
 using Polynomials
 using Pardiso
+using SparseArrays
 
 include("algebra.jl")
 include("extended_trs_boundary.jl")

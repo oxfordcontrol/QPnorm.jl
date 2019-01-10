@@ -42,34 +42,20 @@ function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     end
 end
 
-function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) where T
+function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T, project!, x, λ_max::T; kwargs...) where T
     n = length(q)
     if n < 15
         return trs_boundary_small(P, q, r; kwargs...)
     else
-        # return trs_boundary(P, q, r; kwargs...)
+        # return trs_boundary(P, q, r, project!, x, λ_max; kwargs...)
         try
-            x_g, x_l, info = trs_boundary(P, q, r; kwargs...)
-            #=
-            x_g1, x_l1, info1 = trs_boundary_small(P, q, r; kwargs...)
-            @show info
-            @show info1
-            @show norm(x_g - x_g1)
-            =#
-            return x_g, x_l, info
+            return trs_boundary(P, q, r, project!, x, λ_max; kwargs...)
         catch e
             if isa(e, LAPACKException)
-                try
-                    @warn "Error #1:", typeof(e), " - trying again"
-                    return trs_boundary(P, q, r; kwargs...)
-                catch
-                    #    @show e
-                    @warn "Error #2:", e, " - switching to direct"
-                    return trs_boundary_small(P, q, r; kwargs...)
-                end
+                @warn "Error #1:", typeof(e), " - trying again"
+                return trs_boundary(P, q, r, project!, x, λ_max; kwargs...)
             else
-                @warn "Error:", e, " - switching to direct"
-                return trs_boundary_small(P, q, r; kwargs...)
+                throw(e)
             end
         end
     end
