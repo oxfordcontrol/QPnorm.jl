@@ -11,7 +11,7 @@ where `x` in the `n-`dimensional variable and `P` is a general symmetric (defini
 ## Installation
 The solver can be installed by running
 ```
-add https://github.com/oxfordcontrol/GeneralQP.jl
+add https://github.com/oxfordcontrol/eTRS.jl
 ```
 in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1).
 
