@@ -15,6 +15,8 @@ add https://github.com/oxfordcontrol/eTRS.jl
 ```
 in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1).
 
+This package is heavily based and requires [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl).
+
 ## Usage
 Problems of the form
 ```
