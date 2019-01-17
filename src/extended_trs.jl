@@ -1,5 +1,3 @@
-using GeneralQP
-
 function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; kwargs...) where T 
 

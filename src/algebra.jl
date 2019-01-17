@@ -1,4 +1,3 @@
-using GeneralQP
 using Arpack
 using TRS
 
