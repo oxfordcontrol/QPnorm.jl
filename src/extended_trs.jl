@@ -1,5 +1,5 @@
 function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
-    x::Vector{T}; kwargs...) where T 
+    x::Vector{T}; max_iter=Inf, kwargs...) where T 
 
     boundary_data, interior_data = create_data(P, q, A, b, r, x; kwargs...)
 
@@ -15,7 +15,7 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
         print_info(data)
     end
 
-    while !data.done && data.iteration <= Inf
+    while !data.done && data.iteration <= max_iter
         iterate!(data)
         if data.verbosity > 0
             mod(data.iteration, 10*data.printing_interval) == 0 && print_header(data)
@@ -62,7 +62,11 @@ function update_data!(qp::GeneralQP.Data, etrs::Data)
     # remove the temporal constraint parallel to x
     remove_constraint!(qp.F, qp.F.QR.m)
     GeneralQP.update_views!(qp)
-    print_header(qp)
+    if qp.verbosity > 0
+        @info "Changing to QP solver."
+        print_header(qp)
+        (mod(qp.iteration + 1, qp.printing_interval) != 0) && print_info(qp)
+    end
 end
 
 function update_data!(etrs::Data, qp::GeneralQP.Data)
@@ -78,8 +82,12 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
         # Check if idx corresponds to ||x|| = r?
         !etrs.done && idx <= length(etrs.working_set) && remove_constraint!(etrs, idx)
     end
-    @show "change to etrs"
     GeneralQP.update_views!(etrs)
+    if etrs.verbosity > 0
+        @info "Changing to constant-norm QP solver."
+        print_header(etrs)
+        (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)
+    end
     print_header(etrs)
 end
 
