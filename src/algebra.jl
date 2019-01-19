@@ -4,38 +4,63 @@ using TRS
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
     Calculates the points intersecting points between the 2d plane defined
-    as a1*y1 + a2*y2 <= b
-    and the circle y1^2 + y^2 = r^2
-
-    Returns y11, y12, y21, y22 such that [y11; y12] and [y21; y22] are the two intersecting points.
+    as a1*x + a2*y = b
+    and the circle x^2 + y^2 = r^2
+    Returns x1, y1, x2, y2 such that [x1; y1] and [x2; y2] are the two intersecting points.
     If no intersection(s) exist then NaN values are returned.
-
     Reference: http://mathworld.wolfram.com/Circle-LineIntersection.html
     """
-    inv_norm_a = one(T)/sqrt(a1^2 + a2^2)
-    if inv_norm_a > 1e15  # Very badly scaled problem or LICQ is violated
+    # Normalize, i.e. make [a1; a2] unit norm
+    norm_a = sqrt(a1^2 + a2^2)
+    if norm_a < 1e-11  # Very badly scaled problem
+        @warn "Badly scaled circe-line"
         return T(NaN), T(NaN), T(NaN), T(NaN)
     end
-    a1 *= inv_norm_a; a2 *= inv_norm_a; b *= inv_norm_a
+    a1 /= norm_a; a2 /= norm_a; b /= norm_a
 
-    x1 = a1*b; x2 = a2*b
-    # [x1; x2 + a1] and [x2; x1 - a2] are two points in the plane
+    # First calculate a point (x, y) on the line
+    # and dx, dy such that (x + dx, y + dy) lies also on the line.
+    if abs(a1) > abs(a2) # Avoid dividing with something small
+        x = (b - a2)/a1
+        y = one(T)
 
-    D = x1*(x2 + a1) - x2*(x1 - a2)
+        dx = -a2/a1
+        dy = one(T)
+    else
+        x = one(T)
+        y = (b - a1)/a2
+
+        dx = one(T)
+        dy = -a1/a2
+    end
+
+    # Make (dx, dy) unit norm
+    norm_d = sqrt(dx^2 + dy^2)
+    dx /= norm_d; dy /= norm_d
+
+    D = x*(y + dy) - (x + dx)*y
+    #= Allow for slightly infeasible solutions
+    if abs(r)/abs(D) <= one(T)
+        @show abs(r)/abs(D) - 1
+        if abs(r)/abs(D) >= one(T) - 1e-11
+            D = r
+        end
+    end
+    =#
     if r >= abs(D)
         c = sqrt(r^2 - D^2)
 
-        y11 = D*a1; y12 = D*a2
-        y21 = y11;  y22 = y12;
+        x1 = D*dy; y1 = -D*dx
+        x2 = x1;  y2 = y1;
 
-        δ1 = -sign(a1)*a2*c
-        δ2 = abs(a1)*c
+        δ1 = dx*c
+        if dy < 0; δ1 = -δ1 end
+        δ2 = abs(dy)*c
 
-        y11 += δ1; y12 += δ2
-        y21 -= δ1; y22 -= δ2
+        x1 += δ1; y1 += δ2
+        x2 -= δ1; y2 -= δ2
 
-        # @show maximum(a1*y11 + a2*y12 - b), abs(norm([y11; y12]) - r)
-        return y11, y12, y21, y22
+        return x1, y1, x2, y2
     else
         return T(NaN), T(NaN), T(NaN), T(NaN)
     end
@@ -46,16 +71,8 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) 
     if n < 15
         return trs_boundary_small(P, q, r; kwargs...)
     else
-        # return trs_boundary(P, q, r; kwargs...)
         try
-            x_g, x_l, info = trs_boundary(P, q, r; kwargs...)
-            #=
-            x_g1, x_l1, info1 = trs_boundary_small(P, q, r; kwargs...)
-            @show info
-            @show info1
-            @show norm(x_g - x_g1)
-            =#
-            return x_g, x_l, info
+            return trs_boundary(P, q, r; kwargs...)
         catch e
             if isa(e, LAPACKException)
                 try
