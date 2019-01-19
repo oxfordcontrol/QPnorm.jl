@@ -22,6 +22,7 @@ mutable struct Data{T}
     x::Vector{T}  # Variable of the minimization problem
     y::Vector{T}  # Reduced variable on the nullspace of the working constraints
     x0::Vector{T} # x - F.Z'*y
+    f0::T # Constant term in reduced TRS
 
     n::Int  # length(x)
     m::Int  # Number of constraints
@@ -90,7 +91,7 @@ mutable struct Data{T}
         m, n = size(A)
         λ = zeros(T, m);
 
-        new{T}(x, zeros(T, 0), zeros(T, 0),
+        new{T}(x, zeros(T, 0), zeros(T, 0), 0.0,
             n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set, false, 0,
             view(A_shuffled, m-l+1:m, :),
             view(b_shuffled, m-l+1:m),
@@ -130,16 +131,21 @@ function iterate!(data::Data{T}) where{T}
     data.y = data.F.Z'*data.x  # Reduced free variable
     data.x0 = data.x - data.F.Z*data.y
     data.Zq = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q
+    data.f0 = dot(data.x0, (data.F.P*data.x0))/2 + dot(data.q, data.x0)
 
     new_constraint = gradient_steps(data, 5)
 
     if isnan(new_constraint)
-        x_global, x_local, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y); compute_local=true)
-        new_constraint = move_towards_optimizer!(data, x_global)
-        if isnan(new_constraint) && norm(data.y - x_global)/norm(data.y) >= 1e-6
-            new_constraint = move_towards_optimizer!(data, x_local)
-            if isnan(new_constraint) && (isempty(x_local) || norm(data.y - x_local)/norm(data.y) >= 1e-6)
+        Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y))
+        new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+        if isnan(new_constraint) && !is_minimizer
+            Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), compute_local=true)
+            new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+            if isnan(new_constraint) && !is_minimizer
                 new_constraint = gradient_steps(data)
+                if isnan(new_constraint)
+                    new_constraint = curvature_step(data)
+                end
             end
         end
     end
@@ -165,128 +171,200 @@ function check_kkt!(data)
 
     λ = multipliers[1:end-1]
     μ = multipliers[end]
-    # g = grad(data, data.y);  g .-= (data.y/norm(data.y))*dot(g, data.y/norm(data.y))
-    # data.residual = norm(g)
-    data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; μ])
+    data.residual = norm(projected_gradient(data, data.y))
+    # data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; μ])
 
     data.λ .= 0
     data.λ[data.working_set] .= λ
     data.μ = μ
-    if all(data.λ .>= 0)
+    if all(data.λ .>= -max(1e-8, data.residual))
         data.done = true
         data.removal_idx = 0
     else
+        # @show minimum(λ)
         data.removal_idx = argmin(λ)
     end
 
     return data.removal_idx
 end
 
-function move_towards_optimizer!(data, x_global)
-    if isempty(x_global)
-        return NaN
+function move_towards_optimizers!(data, Y)
+    how_many = size(Y, 2)
+    if isfeasible(data, Y[:, 1])
+        data.y = Y[:, 1]
+        return NaN, true
     end
-    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-    d1 = data.y/norm(data.y)
-    d2 = project!(data.y - x_global)
-    d2 ./= norm(d2)
-
-    return solve_2d(data, d1, d2)
+    if how_many == 0
+        return NaN
+    elseif how_many == 1
+        d1 = data.y
+        d2 = data.y - Y[:, 1]; d2 ./= norm(d2)
+        minimizer_grad = norm(projected_gradient(data, Y[:, 1]))
+        minimizer_value = f(data, Y[:, 1])
+    else
+        d1 = data.y - Y[:, 1]
+        d2 = data.y - Y[:, 2]; d2 ./= norm(d2)
+        minimizer_grad = max(norm(projected_gradient(data, Y[:, 1])), norm(projected_gradient(data, Y[:, 2])))
+        minimizer_value = max(f(data, Y[:, 1]), f(data, Y[:, 2])) 
+    end
+    D = qr([d1 d2]).Q
+    new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
+    is_minimizer = ((norm(projected_gradient(data, data.y)) <= 1e-6)
+                && (f(data, data.y) <= minimizer_value + 0.05*abs(minimizer_value)))
+    if isnan(new_constraint) && how_many >= 1
+        is_minimizer = true
+    end
+    
+    return new_constraint, is_minimizer
 end
 
 function gradient_steps(data, max_iter=Inf)
-    n = length(data.y)
-    if n == 1
-        max_iter = 1
-    end
+    k = 0;
     new_constraint = NaN
-    k = 0; h = 0
-    while isnan(new_constraint) && k < max_iter
-        project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-        g = project!(grad(data, data.y))
-        if norm(g) > 1e-6 || isfinite(max_iter)
-            d1 = data.y/norm(data.y)
-            d2 = g/norm(g)
-        else
-            d1 = data.y/norm(data.y)
-            d2 = minimum_tangent_eigenvector(data)
-            h += 1
-        end
-        new_constraint = solve_2d(data, d1, d2)
+    project_grad = projected_gradient(data, data.y)
+    while isnan(new_constraint) && k < max_iter && norm(project_grad) >= 1e-7
+        d1 = data.y/norm(data.y)
+        d2 = project_grad/norm(project_grad)
+        new_constraint = minimize_2d(data, d1, d2)
+        project_grad = projected_gradient(data, data.y)
         k += 1
     end
-    data.grad_steps += k - h
-    data.eigen_steps = h
+    data.grad_steps += k
 
     return new_constraint
 end
 
-function solve_2d(data, d1, d2)
-    y1 = dot(data.y, d1); y2 = dot(data.y, d2)
-    x0 = data.y - d1*y1 - d2*y2
-    r = sqrt(y1^2 + y2^2)
-
-    f_2d, P_2d, q_2d = generate_2d_cost(data, d1, d2, x0)
-    grad = P_2d*[y1; y2] + q_2d
-    if angle(y1, y2, grad[1], grad[2]) <= pi 
-        y2 = -y2
-        d2 = -d2
-        f_2d, P_2d, q_2d = generate_2d_cost(data, d1, d2, x0)
+function curvature_step(data)
+    d1 = data.y/norm(data.y) # ToDo: Change this to include the global minimiser
+    d2 = minimum_tangent_eigenvector(data)
+    try
+        d2 = minimum_tangent_eigenvector(data)
+    catch e
+        if isa(e, AssertionError)
+            return NaN
+        else
+            throw(e)
+        end
     end
-    find_infeasible!, isfeasible, a1, a2, b1 = generate_2d_feasibility(data, d1, d2, x0, y1, y2)
 
-    if any(isnan.(P_2d)) || any(isnan.(q_2d)) || isnan(r)
-        @show P_2d, q_2d, r
+    return minimize_2d(data, d1, d2)
+end
+
+function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
+    grad = P*[x0; y0] + q
+    flip = false
+    if dot(grad, [x0; y0]) < 0
+        flip = true
+        # Flip y axis, thus obtaining dot(grad, [x0, y0]) > 0
+        y0 = -y0
+        a2 = -a2
+        P[1, 2] = -P[1, 2]; P[2, 1] = -P[2, 1]
+        q[2] = -q[2]
     end
-    y_g, y_l, info = trs_robust(P_2d, q_2d, r; compute_local=true)
+
+    infeasibility(x, y) = maximum(a1*x + a2*y - b)
+    tol = max(1e-12, 1.5*infeasibility(x0, y0))
 
     new_constraint = NaN
-    f0 = f_2d(y1, y2); f0 += max(data.tolerance, data.tolerance*abs(f0))
-    if isfeasible(y_g[1], y_g[2])
-        y1 = y_g[1]; y2 = y_g[2]
-    elseif !isempty(y_l) && f_2d(y_l[1], y_l[2]) <= f0 && isfeasible(y_l[1], y_l[2])
-        y1 = y_l[1]; y2 = y_l[2]
+    X, info = trs_boundary_small(P, q, r; compute_local=true, tol_hard=2e-8)
+    #=
+    if length(X) == 0
+        @save "error.jld2" P q r
+        @show P, q, r
+    end
+    =#
+    if infeasibility(X[1, 1], X[2, 1]) <= tol
+        x, y = X[1, 1], X[2, 1]
     else
-        theta = find_closest_minimizer(y1, y2, y_g, y_l)
-        low = 0.0
-        high = theta
-
-        done = false
-        k = 0
-        # Binary Search
-        while !done
-            theta = low + (high - low)/2
-            violating_constraints = find_infeasible!(r*cos(theta), r*sin(theta))
-            if findlast(violating_constraints) != nothing
-                new_constraint = findlast(violating_constraints)
-            end
-            if sum(violating_constraints) == 1 || k > 60
-                done = true
-            elseif sum(violating_constraints) == 0
-                low = theta
-            else
-                high = theta
-            end
-            k += 1
+        θ0 = angle(one(T), zero(T), x0, y0)
+        δθ_global = angle(x0, y0, X[1, 1], X[2, 1])
+        if size(X, 2) == 1
+            θ = θ0 + δθ_global
+        else
+            δθ_local = angle(x0, y0, X[1, 2], X[2, 2])
+            θ = θ0 + min(δθ_global, δθ_local)
         end
+        # @show θ - θ0
 
-        y11, y12, y21, y22 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b1[new_constraint], r)
-        if isfeasible(y11, y12)
-            if isfeasible(y21, y22)
-                if f_2d(y11, y12) <= f_2d(y21, y22)
-                    y1 = y11; y2 = y12
+        n = length(b)
+        function find_violations!(violating_constraints::Vector{Bool}, θ::T) where{T}
+            x, y = r*cos(θ), r*sin(θ)
+            @inbounds for i = 1:n
+                violating_constraints[i] = x*a1[i] + y*a2[i] - b[i] >= tol
+            end
+            return violating_constraints
+        end
+        violating_constraints = Vector{Bool}(undef, n)
+
+        find_violations!(violating_constraints, θ)
+        if !any(violating_constraints)
+            x, y = r*cos(θ), r*sin(θ)
+        else
+            new_constraint = findlast(violating_constraints)
+            low = θ0
+            high = θ
+            # Binary Search
+            for i = 1:60
+                θ = low + (high - low)/2
+                find_violations!(violating_constraints, θ)
+                if any(violating_constraints)
+                    new_constraint = findlast(violating_constraints)
+                end
+                if sum(violating_constraints) == 0
+                    low = θ
                 else
-                    y1 = y21; y2 = y22
+                    high = θ
+                end
+            end
+
+            x1, y1, x2, y2 = circle_line_intersections(
+                a1[new_constraint], a2[new_constraint], b[new_constraint], r)
+            if infeasibility(x1, y1) <= tol || infeasibility(x1, y1) <= infeasibility(x2, y2)
+                f_2d(x, y) = dot([x1; x2], P*[x1; x2])/2 + dot([x1; x2], q)
+                if infeasibility(x1, y2) <= tol && f_2d(x1, y1) <= f_2d(x2, y2)
+                    x, y = x2, y2
+                else
+                    x, y = x1, y1
                 end
             else
-                y1 = y11; y2 = y12
+                x, y = x2, y2
             end
-        else
-            y1 = y21; y2 = y22
         end
     end
-    # @show f_2d(y1, y2), maximum(a1*y1+y2*a2 - b1)
-    @. data.y = x0 + y1*d1 + y2*d2
+    @assert !isnan(x) && !isnan(y)
+    if flip; y = -y; end
+
+    return x, y, new_constraint
+end
+
+function minimize_2d(data, d1, d2)
+    x0 = dot(data.y, d1); y0 = dot(data.y, d2)
+    z = data.y - d1*x0 - d2*y0
+    r = sqrt(x0^2 + y0^2)
+
+    # Calculate 2d cost matrix [P11 P12
+    #                           P12 P22]
+    # and vector [q1; q2]
+    Pd1 = data.F.ZPZ*d1
+    P11 = dot(d1, Pd1)
+    q1 = dot(d1, data.Zq) + dot(Pd1, z)
+
+    Pd2 = data.F.ZPZ*d2
+    P22 = dot(d2, Pd2)
+    P12 = dot(d1, Pd2)
+    q2 = dot(d2, data.Zq) + dot(Pd2, z)
+    P = [P11 P12; P12 P22]; q = [q1; q2]
+
+    b = data.b_ignored - data.A_ignored*(data.F.Z*z + data.x0)
+    a1 = data.A_ignored*(data.F.Z*d1)
+    a2 = data.A_ignored*(data.F.Z*d2)
+
+    # Discard perfectly correlated constraints
+    idx = a1.^2 + a2.^2 .<= 1e-19
+    a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
+
+    x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
+    @. data.y = z + x*d1 + y*d2
 
     return new_constraint
 end
@@ -301,7 +379,7 @@ function find_closest_minimizer(y1, y2, y_g, y_l)
     end
 end
 
-function angle(x1, x2, y1, y2)
+function angle(x1, y1, x2, y2)
     dot = x1*x2 + y1*y2      # dot product between [x1, y1] and [x2, y2]
     det = x1*y2 - y1*x2      # determinant
     angle = atan(det, dot)  # atan2(y, x) or atan2(sin, cos))
@@ -311,85 +389,37 @@ function angle(x1, x2, y1, y2)
     return angle
 end
 
-function generate_2d_cost(data, d1, d2, x0)
-    """
-    Returns a function handle f_2d(y1, y2) that calculates the cost of points
-    on the plane defined by the two directions data.F.Z*d1 + data.F.Z*d2
-    and the point data.F.Z*x0 + data.x0, i.e. giving
-    f_2d(y1, y2) = f(data, y1*data.F.Z*d1 + y2*data.F.Z*d2 + data.F.Z*x0 + data.x0)
-    (recall that data.F.Z is an orthonormal matrix spanning the nullspace of the working set).
-    Also, note that x0 is perpendicular to d1, d2.
-
-    The associated cost matrices P_2d and q_2d are also returned so that
-    f_2d(y1, y2) = 1/2*[y1 y2]*P_2d*[y1; y2] + [y1 y2]*q_2d
-    """
-    Pd1 = data.F.ZPZ*d1
-    P11 = dot(d1, Pd1)
-    q1 = dot(d1, data.Zq) + dot(Pd1, x0)
-
-    Pd2 = data.F.ZPZ*d2
-    P22 = dot(d2, Pd2)
-    P12 = dot(d1, Pd2)
-    q2 = dot(d2, data.Zq) + dot(Pd2, x0)
-
-    @inline f_2d(y1, y2) = (y1^2*P11 + y2^2*P22)/2 + y1*y2*P12 + y1*q1 + y2*q2
-
-    return f_2d, [P11 P12; P12 P22], [q1; q2]
-end
-
-function generate_2d_feasibility(data, d1, d2, x0, y1, y2)
-    """
-    Returns a function handle isfeasible(y1, y2) that calculates the feasibility (true/false)
-    of point on the plane defined by the two directions data.F.Z*d1 + data.F.Z*d2
-    and the point data.F.Z*x0 + data.x0, i.e. giving
-    isfeasible(y1, y2) = isfeasible(data, y1*data.F.Z*d1 + y2*data.F.Z*d2 + data.F.Z*x0 + data.x0)
-    (recall that data.F.Z is an orthonormal matrix spanning the nullspace of the working set).
-    Also, note that x0 is perpendicular to d1, d2.
-
-    Three vectors a1, a2, b1 are also returned that give:
-    isfeasible(y1, y2) = all(y1*a1 + y2*a2 - b1 .< data.tolerance)
-    """
-    b1 = data.b_ignored - data.A_ignored*(data.F.Z*x0 + data.x0)
-    a1 = data.A_ignored*(data.F.Z*d1)
-    a2 = data.A_ignored*(data.F.Z*d2)
-
-    tol = max(2*maximum(a1*y1 + a2*y2 - b1), data.tolerance)
-
-    violating_constraints = Array{Bool}(undef, length(b1))
-    function find_infeasible!(y1::T, y2::T) where{T}
-        n = length(b1)
-        @inbounds for i = 1:n
-            violating_constraints[i] = y1*a1[i] + y2*a2[i] - b1[i] >= tol
-        end
-        return violating_constraints
-    end
-    isfeasible(y1, y2) = (findfirst(find_infeasible!(y1, y2)) == nothing)
-
-    return find_infeasible!, isfeasible, a1, a2, b1
-end
-
 function minimum_tangent_eigenvector(data)
-    # @show data.y
+    @assert maximum(data.A_ignored*(data.x0 + data.F.Z*data.y) - data.b_ignored) <= 1e-10
+    @show data.y
     project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-    l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) # Approximate Lagrange multiplier
+    l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) - 100 # Approximate Lagrange multiplier
     function custom_mul!(y::AbstractVector, x::AbstractVector)
+        # print(dot(x, data.y), " ")
+        project!(x)
         mul!(y, data.F.ZPZ, x)
         axpy!(l, x, y)
         project!(y)
     end
     L = LinearMap{Float64}(custom_mul!, data.F.m; ismutating=true, issymmetric=true)
-    (λ_min, v_min, nconv, niter, nmult, resid) = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
+    λ_min, v_min, _ = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
+    λ_min = λ_min[1]; v_min = v_min[:, 1]
+    λ_min += 100
 
-    @show λ_min
-    @show abs(dot(v_min, data.y))
-    @assert λ_min[1] < 0 "Error: Either the problem is badly scaled or it belongs to the hard case."
-    @assert abs(dot(v_min, data.y)) <= 1e-6 "Error: Either the problem is badly scaled or it belongs to the hard case."
-
-    return v_min[:, 1]/norm(v_min)
+    if abs(dot(v_min, data.y)) >= 1e-6
+        @warn "Search for negative curvature failed; we assume that we are in a local minimum"
+        @assert false
+    end
+    if λ_min >= 0
+        @warn "We ended up in an unexpected TRS local minimum. Perhaps we are in the hard-case or the problem is badly scaled." λ_min
+        @assert false
+    end
+    project!(v_min)
+    return v_min/norm(v_min)
 end
 
 function isfeasible(data::Data{T}, x) where{T}
-    tol = max(2*maximum(data.A*data.x - data.b), data.tolerance)
+    tol = max(1.2*maximum(data.A*data.x - data.b), data.tolerance)
     if length(x) == data.n
         return all(data.A*x - data.b .<= data.tolerance)
     elseif length(x) == data.F.m
@@ -403,7 +433,7 @@ function f(data::Data{T}, x) where{T}
     if length(x) == data.n
         return dot(x, data.F.P*x)/2 + dot(x, data.q)
     elseif length(x) == data.F.m
-        return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq)
+        return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq) + data.f0
     else
         throw(DimensionMismatch)
     end
@@ -417,4 +447,10 @@ function grad(data::Data{T}, x) where{T}
     else
         throw(DimensionMismatch)
     end
+end
+
+function projected_gradient(data::Data{T}, x) where{T}
+   gradient = grad(data, x) 
+   v = qr([x gradient]).Q[:, 2]
+   return dot(v, gradient)*v
 end
