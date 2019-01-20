@@ -41,6 +41,7 @@ end
 
 function create_data(P, q, A, b, r, x_init; kwargs...)
     interior_data = GeneralQP.Data(P, q, A, b, x_init; kwargs..., r_max=r)
+    # interior_data.verbosity = 0
     boundary_data = Data(P, q, A, b, r, x_init,
         interior_data.F.QR, interior_data.working_set, interior_data.ignored_set,
         interior_data.A_shuffled, interior_data.b_shuffled; kwargs...)
@@ -88,7 +89,6 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
         print_header(etrs)
         (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)
     end
-    print_header(etrs)
 end
 
 function iterate!(data::GeneralQP.Data{T}) where T
