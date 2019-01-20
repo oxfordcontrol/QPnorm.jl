@@ -165,7 +165,7 @@ function check_kkt!(data)
     R[1:end-1, end] = data.F.QR.Q1'*data.x
     R[end, end] = F.factors[1, 1]
 
-    g = grad(data, data.x)
+    g = data.F.P*data.x + data.q
     Qg = -[data.F.QR.Q1'*g; (F.Q'*(data.F.QR.Q2'*g))[1]]
     multipliers = UpperTriangular(R)\Qg
 
@@ -420,33 +420,15 @@ end
 
 function isfeasible(data::Data{T}, x) where{T}
     tol = max(1.2*maximum(data.A*data.x - data.b), data.tolerance)
-    if length(x) == data.n
-        return all(data.A*x - data.b .<= data.tolerance)
-    elseif length(x) == data.F.m
-        return all(data.A_ignored*(data.F.Z*x + data.x0) - data.b_ignored .<= data.tolerance)
-    else
-        throw(DimensionMismatch)
-    end
+    return all(data.A_ignored*(data.F.Z*x + data.x0) - data.b_ignored .<= data.tolerance)
 end
 
 function f(data::Data{T}, x) where{T}
-    if length(x) == data.n
-        return dot(x, data.F.P*x)/2 + dot(x, data.q)
-    elseif length(x) == data.F.m
-        return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq) + data.f0
-    else
-        throw(DimensionMismatch)
-    end
+    return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq) + data.f0
 end
 
 function grad(data::Data{T}, x) where{T}
-    if length(x) == data.n
-        return data.F.P*x + data.q
-    elseif length(x) == data.F.m
-        return data.F.ZPZ*x + data.Zq
-    else
-        throw(DimensionMismatch)
-    end
+    return data.F.ZPZ*x + data.Zq
 end
 
 function projected_gradient(data::Data{T}, x) where{T}
