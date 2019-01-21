@@ -66,13 +66,13 @@ function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     end
 end
 
-function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; kwargs...) where T
+function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, kwargs...) where T
     n = length(q)
     if n < 15
         return trs_boundary_small(P, q, r; kwargs...)
     else
         try
-            return trs_boundary(P, q, r; kwargs...)
+            return trs_boundary(P, q, r; tol=tol, kwargs...)
         catch e
             if isa(e, LAPACKException)
                 try
