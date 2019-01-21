@@ -35,8 +35,8 @@ for file in files
             r = norm(x_init)
             if r > 1e-6 && r < 1e5 && status == :Optimal
                 @show file, r, m, n
-                x = eTRS.solve_boundary(Matrix(P), q, Matrix(A), b, r, copy(x_init), verbosity=1, printing_interval=1, max_iter=5000)
-                return nothing
+                # x = eTRS.solve_boundary(Matrix(P), q, Matrix(A), b, r, copy(x_init), verbosity=1, printing_interval=1, max_iter=5000)
+                # return nothing
                 try
                     x_ipopt = solve_ipopt(P, q, A, b, r)
                     x = eTRS.solve_boundary(Matrix(P), q, Matrix(A), b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=5000)
