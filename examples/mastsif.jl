@@ -2,8 +2,6 @@ using LinearAlgebra, Random
 using BenchmarkTools
 using JLD2, FileIO
 using JuMP
-using Gurobi
-using CPLEX
 using Glob
 include("../src/eTRS.jl")
 include("./subproblems.jl")
@@ -23,7 +21,7 @@ df = DataFrame(name=String[], n = Int[], m = Int[],
     infeasibility = Float64[], infeasibility_ipopt = Float64[],
     solution = [], solution_ipopt = [])
 
-for file in files[1:3]
+for file in files
     # file = string("HIMMELBJ", ".jld2")
     filepath = string(path, file)
     q = load(filepath, "q")
