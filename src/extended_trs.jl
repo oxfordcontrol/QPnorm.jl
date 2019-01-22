@@ -36,7 +36,7 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
             data = interior_data
         end
     end
-    return x
+    return data.x
 end
 
 function create_data(P, q, A, b, r, x_init; kwargs...)
@@ -56,21 +56,25 @@ function update_data!(qp::GeneralQP.Data, etrs::Data)
     add_constraint!(etrs.F, etrs.x/norm(etrs.x))
     qp.x = etrs.x
     qp.F.m = qp.F.QR.n - qp.F.QR.m
-    qp.F.U.data .= cholesky!(Symmetric(etrs.F.ZPZ)).U
-    qp.F.d .= 1
     qp.F.artificial_constraints = 0  # No need for them now :)
     GeneralQP.update_views!(qp.F)
+    qp.F.U.data .= cholesky!(Symmetric(etrs.F.ZPZ[qp.F.m:-1:1, qp.F.m:-1:1])).U
+    qp.F.d .= 1
     # remove the temporal constraint parallel to x
     remove_constraint!(qp.F, qp.F.QR.m)
     GeneralQP.update_views!(qp)
     if qp.verbosity > 0
         @info "Changing to QP solver."
         print_header(qp)
-        (mod(qp.iteration + 1, qp.printing_interval) != 0) && print_info(qp)
+        # (mod(qp.iteration + 1, qp.printing_interval) != 0) && print_info(qp)
+        print_info(qp)
     end
 end
 
 function update_data!(etrs::Data, qp::GeneralQP.Data)
+    if etrs.verbosity > 0
+        @info "Changing to constant-norm QP solver."
+    end
     etrs.iteration = qp.iteration
     etrs.x = qp.x
     # We only have to recompute etrs.F.ZPZ
@@ -79,15 +83,23 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
     etrs.F.ZPZ .= etrs.F.Z'*etrs.F.P*etrs.F.Z
     etrs.F.ZPZ .= (etrs.F.ZPZ + etrs.F.ZPZ')/2
     if etrs.F.m <= 1
-        idx = check_kkt!(etrs)
-        # Check if idx corresponds to ||x|| = r?
-        !etrs.done && idx <= length(etrs.working_set) && remove_constraint!(etrs, idx)
+        etrs.y = etrs.F.Z'*etrs.x
+        etrs.x0 = etrs.x - etrs.F.Z*etrs.y
+        etrs.Zq = etrs.F.Z'*(etrs.q + etrs.F.P*etrs.x0) # Reduced q
+        if norm(etrs.y) <= 1e-10
+            @warn "LICQ failed. Terminating"
+            etrs.done = true
+        else
+            idx = check_kkt!(etrs)
+            # Check if idx corresponds to ||x|| = r?
+            !etrs.done && idx <= length(etrs.working_set) && remove_constraint!(etrs, idx)
+        end
     end
     GeneralQP.update_views!(etrs)
     if etrs.verbosity > 0
-        @info "Changing to constant-norm QP solver."
         print_header(etrs)
-        (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)
+        # (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)
+        print_info(etrs)
     end
 end
 

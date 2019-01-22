@@ -20,6 +20,7 @@ mutable struct Data{T}
     stored in a continuous manner. This allows efficient use of BLAS.
     """
     x::Vector{T}  # Variable of the minimization problem
+    x_g::Vector{T}
     y::Vector{T}  # Reduced variable on the nullspace of the working constraints
     x0::Vector{T} # x - F.Z'*y
     f0::T # Constant term in reduced TRS
@@ -91,7 +92,7 @@ mutable struct Data{T}
         m, n = size(A)
         λ = zeros(T, m);
 
-        new{T}(x, zeros(T, 0), zeros(T, 0), 0.0,
+        new{T}(x, zeros(T, 0), zeros(T, 0), zeros(T, 0), 0.0,
             n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set, false, 0,
             view(A_shuffled, m-l+1:m, :),
             view(b_shuffled, m-l+1:m),
@@ -139,9 +140,14 @@ function iterate!(data::Data{T}) where{T}
     data.f0 = dot(data.x0, (data.F.P*data.x0))/2 + dot(data.q, data.x0)
 
     new_constraint = gradient_steps(data, 5)
+    if length(data.x_g) > 0 && isnan(new_constraint)
+        Ymin = data.F.Z'*data.x_g
+        new_constraint, _ = move_towards_optimizers!(data, Ymin)
+    end
 
     if isnan(new_constraint)
         Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11)
+        data.x_g = data.x0 + data.F.Z*Ymin[:, 1];
         new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
         if isnan(new_constraint) && !is_minimizer
             Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11, compute_local=true)
@@ -149,7 +155,7 @@ function iterate!(data::Data{T}) where{T}
             if isnan(new_constraint) && !is_minimizer
                 new_constraint = gradient_steps(data)
                 if isnan(new_constraint)
-                    new_constraint = curvature_step(data)
+                    new_constraint = curvature_step(data, Ymin[:, 1])
                 end
             end
         end
@@ -194,12 +200,6 @@ end
 
 function move_towards_optimizers!(data, Y)
     how_many = size(Y, 2)
-    #=
-    if isfeasible(data, Y[:, 1])
-        data.y = Y[:, 1]
-        return NaN, true
-    end
-    =#
     if how_many == 0
         return NaN
     elseif how_many == 1
@@ -211,15 +211,12 @@ function move_towards_optimizers!(data, Y)
         d1 = data.y - Y[:, 1]
         d2 = data.y - Y[:, 2];
         minimizer_grad = max(norm(projected_gradient(data, Y[:, 1])), norm(projected_gradient(data, Y[:, 2])))
-        # @show f(data, Y[:, 1]), f(data, Y[:, 2])
         minimizer_value = max(f(data, Y[:, 1]), f(data, Y[:, 2])) 
     end
     D = qr([d1 d2]).Q
     new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
-    # @show new_constraint
-    is_minimizer = ((norm(projected_gradient(data, data.y)) <= 1e-6)
-                && (f(data, data.y) <= minimizer_value + 0.05*abs(minimizer_value)))
-    # @show how_many, minimizer_grad, minimizer_value
+    is_minimizer = ((norm(projected_gradient(data, data.y)) <= 1e-7)
+                && (f(data, data.y) <= minimizer_value + max(0.05*abs(minimizer_value), 1e-10)))
     if isnan(new_constraint) && how_many > 1
         is_minimizer = true
     end
@@ -247,20 +244,37 @@ function gradient_steps(data, max_iter=Inf)
     return new_constraint
 end
 
-function curvature_step(data)
-    d1 = data.y/norm(data.y) # ToDo: Change this to include the global minimiser
-    d2 = minimum_tangent_eigenvector(data)
-    try
-        d2 = minimum_tangent_eigenvector(data)
-    catch e
-        if isa(e, AssertionError)
-            return NaN
-        else
-            throw(e)
-        end
+function curvature_step(data, y_global)
+    # Find tangent eigenvector v_min which should correspond to a negative eigenvalue
+    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
+    l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) - 100 # Approximate Lagrange multiplier
+    function custom_mul!(y::AbstractVector, x::AbstractVector)
+        # print(dot(x, data.y), " ")
+        project!(x)
+        mul!(y, data.F.ZPZ, x)
+        axpy!(l, x, y)
+        project!(y)
     end
+    L = LinearMap{Float64}(custom_mul!, data.F.m; ismutating=true, issymmetric=true)
+    λ_min, v_min, _ = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
+    λ_min = λ_min[1]; v_min = v_min[:, 1]
+    λ_min += 100
 
-    return minimize_2d(data, d1, d2)
+    if abs(dot(v_min, data.y)) >= 1e-6
+        @warn "Search for negative curvature failed; we assume that we are in a local minimum"
+        return NaN
+    end
+    if λ_min >= 0
+        @warn "We ended up in an unexpected TRS local minimum. Perhaps the problem is badly scaled." λ_min
+        return NaN
+    end
+    d1 = project!(v_min)
+    d2 = y_global - data.y
+    D = qr([d1 d2]).Q
+    new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
+
+    @assert !isnan(new_constraint)
+    return new_constraint
 end
 
 function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
@@ -279,31 +293,21 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
     tol = max(1e-12, 1.2*infeasibility(x0, y0))
 
     new_constraint = NaN
-    X, info = trs_boundary_small(P, q, r; compute_local=true, tol_hard=2e-7)
+    X, info = trs_boundary_small(P, q, r; compute_local=true)
 
-    #=
-    if length(X) == 0
-        @save "error.jld2" P q r
-        @show P, q, r
-    end
-    =#
     if infeasibility(X[1, 1], X[2, 1]) <= tol
         x, y = X[1, 1], X[2, 1]
     else
         θ0 = angle(one(T), zero(T), x0, y0) # atan(y0, x0) 
         δθ_global = angle(x0, y0, X[1, 1], X[2, 1])
-        # @show info
-        # @show δθ_global 
-        # δθ_global = δθ_local >= 2*pi - 1e-7 ? zero(T) : δθ_local
+        δθ_global = 2*pi - 2e-7 < δθ_global ? zero(T) : δθ_global
         if size(X, 2) == 1
             θ = θ0 + δθ_global
         else
             δθ_local = angle(x0, y0, X[1, 2], X[2, 2])
-            # @show δθ_local 
-            # δθ_local = δθ_local >= 2*pi - 1e-7 ? zero(T) : δθ_local
+            δθ_local = 2*pi - 2e-7 < δθ_local ? zero(T) : δθ_local
             θ = θ0 + min(δθ_global, δθ_local)
         end
-        # @show θ - θ0
 
         n = length(b)
         function find_violations!(violating_constraints::Vector{Bool}, θ::T) where{T}
@@ -315,57 +319,37 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
         end
         violating_constraints = Vector{Bool}(undef, n)
 
-        find_violations!(violating_constraints, θ)
-        if !any(violating_constraints)
+        if !any(find_violations!(violating_constraints, θ))
             x, y = r*cos(θ), r*sin(θ)
         else
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
-            new_constraint = findlast(violating_constraints)
-            low = θ0
-            high = θ
+            θ_low = θ0; θ_high = θ
             # Binary Search
             for i = 1:100
-                θ = low + (high - low)/2
-                #=
-                if f_2d(x0, y0) - f_2d(r*cos(θ), r*sin(θ)) <= -1e-10
-                    x, y = r*cos(low), r*sin(low)
-                    new_constraint = NaN
-                    break;
-                end
-                =#
                 find_violations!(violating_constraints, θ)
-                if any(violating_constraints)
+                if any(violating_constraints) # && f_2d(r*cos(θ), r*sin(θ)) <= f_2d(x0, y0)
+                    θ_high = θ
                     new_constraint = findlast(violating_constraints)
-                end
-                if sum(violating_constraints) == 0 && f_2d(r*cos(θ), r*sin(θ)) < f_2d(x0, y0)
-                    low = θ
                 else
-                    high = θ
+                    θ_low = θ
                 end
+                θ = θ_low + (θ_high - θ_low)/2
             end
-            # @show θ - θ0
 
-            if !isnan(new_constraint)
-                x1, y1, x2, y2 = circle_line_intersections(
-                    a1[new_constraint], a2[new_constraint], b[new_constraint], r)
-                if infeasibility(x1, y1) <= tol # || infeasibility(x1, y1) <= infeasibility(x2, y2)
-                    if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y1)
-                        x, y = x2, y2
-                    else
-                        x, y = x1, y1
-                    end
-                elseif infeasibility(x2, y2) <= tol
+            x1, y1, x2, y2 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b[new_constraint], r)
+            if infeasibility(x1, y1) <= tol
+                if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y1)
                     x, y = x2, y2
                 else
-                    x, y = r*cos(low), r*sin(low)
+                    x, y = x1, y1
                 end
-                if isnan(x) || isnan(y)
-                    @show x1, y1, x2, y2, low, high
-                end
+            elseif infeasibility(x2, y2) <= tol
+                x, y = x2, y2
+            else
+                x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
             end
         end
     end
-    @assert !isnan(x) && !isnan(y)
     if flip; y = -y; end
 
     return x, y, new_constraint
@@ -421,33 +405,6 @@ function angle(x1, y1, x2, y2)
         angle += 2*pi
     end
     return angle
-end
-
-function minimum_tangent_eigenvector(data)
-    # @assert maximum(data.A_ignored*(data.x0 + data.F.Z*data.y) - data.b_ignored) <= 1e-10
-    # @show data.y
-    project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
-    l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) - 100 # Approximate Lagrange multiplier
-    function custom_mul!(y::AbstractVector, x::AbstractVector)
-        # print(dot(x, data.y), " ")
-        project!(x)
-        mul!(y, data.F.ZPZ, x)
-        axpy!(l, x, y)
-        project!(y)
-    end
-    L = LinearMap{Float64}(custom_mul!, data.F.m; ismutating=true, issymmetric=true)
-    λ_min, v_min, _ = eigs(L, nev=1, which=:SR, v0=project!(randn(data.F.m)))
-    λ_min = λ_min[1]; v_min = v_min[:, 1]
-    λ_min += 100
-
-    if abs(dot(v_min, data.y)) >= 1e-6
-        @warn "Search for negative curvature failed; we assume that we are in a local minimum"
-    end
-    if λ_min >= 0
-        @warn "We ended up in an unexpected TRS local minimum. Perhaps the problem is badly scaled." λ_min
-    end
-    project!(v_min)
-    return v_min/norm(v_min)
 end
 
 function isfeasible(data::Data{T}, x) where{T}
