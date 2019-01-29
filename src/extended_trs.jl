@@ -1,7 +1,7 @@
 function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; max_iter=Inf, kwargs...) where T 
 
-    boundary_data, interior_data = create_data(P, q, A, b, r, x; kwargs...)
+    @show @elapsed boundary_data, interior_data = create_data(P, q, A, b, r, x; kwargs...)
 
     @assert(norm(x) <= r + 1e-12)
     if norm(x) >= r - 1e-10
@@ -36,6 +36,7 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
             data = interior_data
         end
     end
+    # @show boundary_data.time_trs boundary_data.time_gradient boundary_data.time_move boundary_data.time_add boundary_data.time_remove boundary_data.time_kkt
     return data.x
 end
 
@@ -96,6 +97,8 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
         end
     end
     GeneralQP.update_views!(etrs)
+    etrs.Px0 = etrs.F.P*(etrs.x/norm(etrs.x))
+    etrs.Ax0 = etrs.A*(etrs.x/norm(etrs.x))
     if etrs.verbosity > 0
         print_header(etrs)
         # (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)

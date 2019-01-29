@@ -1,6 +1,7 @@
 using LinearAlgebra
 using Arpack
 using LinearMaps
+using SparseArrays
 
 mutable struct Data{T}
     """
@@ -20,7 +21,7 @@ mutable struct Data{T}
     stored in a continuous manner. This allows efficient use of BLAS.
     """
     x::Vector{T}  # Variable of the minimization problem
-    x_g::Vector{T}
+    x_g::Array{T}
     y::Vector{T}  # Reduced variable on the nullspace of the working constraints
     x0::Vector{T} # x - F.Z'*y
     f0::T # Constant term in reduced TRS
@@ -36,6 +37,8 @@ mutable struct Data{T}
     r::T
     working_set::Vector{Int}
     ignored_set::Vector{Int}
+    Ax0::Vector{T}
+    Px0::Vector{T}
 
     done::Bool
     removal_idx::Int
@@ -58,6 +61,17 @@ mutable struct Data{T}
     trs_choice::Char
     grad_steps::Int
     eigen_steps::Int
+
+    # Timings
+    #=
+    t_global_trs::Vector{T}
+    t_local_trs::Vector{T}
+    t_gradient::Vector{T}
+    t_add_constraint::Vector{T}
+    t_move::Vector{T}
+    t_remove_constraint::T
+    t_kkt::Vector{T}
+    =#
 
     function Data(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T},
         r::T, x::Vector{T}; kwargs...) where T
@@ -93,12 +107,14 @@ mutable struct Data{T}
         λ = zeros(T, m);
 
         new{T}(x, zeros(T, 0), zeros(T, 0), zeros(T, 0), 0.0,
-            n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set, false, 0,
+            n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set,
+            A*(x/norm(x)), P*(x/norm(x)), false, 0,
             view(A_shuffled, m-l+1:m, :),
             view(b_shuffled, m-l+1:m),
             A_shuffled, b_shuffled,
             T(tolerance), verbosity, printing_interval,  # Options
-            0, λ, 0, NaN, '-', 0, 0  # Logging
+            0, λ, 0, NaN, '-', 0, 0,  # Logging
+            # zeros(T, 0), zeros(T, 0), zeros(T, 0), zero(T, 0), zero(T), zero(T), zero(T)
         )
     end
 end
@@ -124,43 +140,59 @@ function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, 
 end
 
 function iterate!(data::Data{T}) where{T}
+    _iterate!(data)
+    _iterate!(data)
+    Profile.clear()		
+    Profile.@profile _iterate!(data)
+    Profile.clear()		
+    Profile.@profile _iterate!(data)
+    ProfileView.view()		
+    println("Press enter to continue...")		
+    readline(stdin)	
+end
+
+function nullspace_projector!(M, A, λ, x)
+    mul!(λ, A, x)
+    λ = M\λ
+    # BLAS.gemv!('T', -1.0, A, λ, 1.0, x)
+    x .-= A'*λ
+    return x 
+end
+
+function _iterate!(data::Data{T}) where{T}
     if data.removal_idx > 0
         remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
     end
 
-    data.y = data.F.Z'*data.x  # Reduced free variable
-    if norm(data.y) <= 1e-10
-        @warn "LICQ failed. Terminating"
-        data.done = true
-        return
-    end
-    data.x0 = data.x - data.F.Z*data.y
-    data.Zq = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q
-    data.f0 = dot(data.x0, (data.F.P*data.x0))/2 + dot(data.q, data.x0)
-
+    data.x0 = data.x - project(data, data.x)
     new_constraint = gradient_steps(data, 5)
-    if length(data.x_g) > 0 && isnan(new_constraint)
-        Ymin = data.F.Z'*data.x_g
-        new_constraint, _ = move_towards_optimizers!(data, Ymin)
-    end
 
     if isnan(new_constraint)
-        Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11)
-        data.x_g = data.x0 + data.F.Z*Ymin[:, 1];
-        new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+        q_ = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q 
+        r_ = sqrt(data.r^2 - norm(data.x0)^2)
+        if r_ <= 1e-10
+            @warn "LICQ failed. Terminating"
+            data.done = true
+            return
+        end
+        Ymin, info = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11)
+        new_constraint, is_minimizer = move_towards_optimizers!(data, data.F.Z*Ymin .+ data.x0)
         if isnan(new_constraint) && !is_minimizer
-            Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11, compute_local=true)
-            new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+            Ymin, info = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11, compute_local=true)
+            new_constraint, is_minimizer = move_towards_optimizers!(data, data.F.Z*Ymin .+ data.x0)
             if isnan(new_constraint) && !is_minimizer
                 new_constraint = gradient_steps(data)
                 if isnan(new_constraint)
                     new_constraint = curvature_step(data, Ymin[:, 1])
                 end
+            else
+                data.x_g = data.x0 .+ data.F.Z*Ymin;
             end
+        else
+            data.x_g = data.x0 .+ data.F.Z*Ymin;
         end
     end
-    data.x = data.x0 + data.F.Z*data.y;
     if !isnan(new_constraint)
         add_constraint!(data, new_constraint)
     end
@@ -176,18 +208,19 @@ function check_kkt!(data)
     R[1:end-1, end] = data.F.QR.Q1'*data.x
     R[end, end] = F.factors[1, 1]
 
-    g = data.F.P*data.x + data.q
+    g = grad(data, data.x)
     Qg = -[data.F.QR.Q1'*g; (F.Q'*(data.F.QR.Q2'*g))[1]]
     multipliers = UpperTriangular(R)\Qg
 
     λ = multipliers[1:end-1]
     μ = multipliers[end]
-    data.residual = norm(projected_gradient(data, data.y))
-    # data.residual = norm(g + [data.A[data.working_set, :]' data.x]*[λ; μ])
 
     data.λ .= 0
     data.λ[data.working_set] .= λ
     data.μ = μ
+
+    data.residual = norm(g + data.A'*data.λ + data.x*data.μ)
+    # data.residual = norm(Qg[length(λ)+1:end])
     if all(data.λ .>= -max(1e-8, data.residual))
         data.done = true
         data.removal_idx = 0
@@ -198,44 +231,52 @@ function check_kkt!(data)
     return data.removal_idx
 end
 
-function move_towards_optimizers!(data, Y)
-    how_many = size(Y, 2)
+function move_towards_optimizers!(data, X)
+    if isfeasible(data, X[:, 1])
+        data.x = X[:, 1]
+        return NaN, true
+    end
+
+    how_many = size(X, 2)
     if how_many == 0
         return NaN
     elseif how_many == 1
-        d1 = data.y
-        d2 = data.y - Y[:, 1];
-        minimizer_grad = norm(projected_gradient(data, Y[:, 1]))
-        minimizer_value = f(data, Y[:, 1])
+        d1 = (data.x - data.x0) #; d1 ./= norm(d1)
+        d2 = X[:, 1] - data.x
+        # @show norm(d2 - dot(d1, d2)*d1)
     else
-        d1 = data.y - Y[:, 1]
-        d2 = data.y - Y[:, 2];
-        minimizer_grad = max(norm(projected_gradient(data, Y[:, 1])), norm(projected_gradient(data, Y[:, 2])))
-        minimizer_value = max(f(data, Y[:, 1]), f(data, Y[:, 2])) 
+        d1 = data.x - X[:, 1]
+        d2 = data.x - X[:, 2]
     end
-    D = qr([d1 d2]).Q
+    D = qr([d1 d2]).Q*Matrix(I, length(d1), 2)
     new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
-    is_minimizer = ((norm(projected_gradient(data, data.y)) <= 1e-7)
-                && (f(data, data.y) <= minimizer_value + max(0.05*abs(minimizer_value), 1e-10)))
-    if isnan(new_constraint) && how_many > 1
-        is_minimizer = true
+    is_minimizer = false
+    if isnan(new_constraint)
+        if how_many > 1 || norm(data.x - X[:, 1])/data.r <= 1e-5
+            @show norm(data.x - X[:, 1])
+            is_minimizer = true
+        end
     end
     
     return new_constraint, is_minimizer
 end
 
-function gradient_steps(data, max_iter=Inf)
+function gradient_steps(data, max_iter=1e6)
     k = 0;
     new_constraint = NaN
-    project_grad = projected_gradient(data, data.y)
-    while isnan(new_constraint) && k < max_iter && norm(project_grad)/max(abs(f(data, data.y)), 10) >= 1e-8
-        d1 = data.y/norm(data.y)
-        d2 = project_grad/norm(project_grad)
-        new_constraint = minimize_2d(data, d1, d2)
-        project_grad = projected_gradient(data, data.y)
+    while isnan(new_constraint) && k < max_iter
+        d1 = data.x - data.x0; d1 ./= norm(d1)
+        d2 = project(data, grad(data, data.x))
+        if norm(d2 - dot(d1, d2)*d1) <= 1e-7
+            break
+        end
+        # if norm(project_grad) <= 1e-8 # ToDo relative to objective value
+        # end
+        Q = qr([data.x - data.x0 project(data, grad(data, data.x))]).Q*Matrix(I, data.n, 2)
+        new_constraint = minimize_2d(data, Q[:, 1], Q[:, 2])
         k += 1
         if mod(k, 500) == 0
-            @warn string(k, "th gradient step with f: ", f(data, data.y), " proj grad norm: ", norm(project_grad))
+            @warn string(k, "th gradient step with f: ", f(data, data.x), " proj grad norm: ", norm(project_grad))
             # @assert k < 1000
         end
     end
@@ -277,6 +318,14 @@ function curvature_step(data, y_global)
     return new_constraint
 end
 
+function find_violations!(violating_constraints::Vector{Bool}, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x::T, y::T) where{T}
+    n = length(a1)
+    @inbounds for i = 1:n
+        violating_constraints[i] = x*a1[i] + y*a2[i] >= b[i]
+    end
+    return violating_constraints
+end
+
 function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
     grad = P*[x0; y0] + q
     flip = false
@@ -290,7 +339,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
     end
 
     infeasibility(x, y) = maximum(a1*x + a2*y - b)
-    tol = max(1e-12, 1.2*infeasibility(x0, y0))
+    tol = T(max(1e-12, 1.2*infeasibility(x0, y0)))
 
     new_constraint = NaN
     X, info = trs_boundary_small(P, q, r; compute_local=true)
@@ -310,23 +359,18 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
         end
 
         n = length(b)
-        function find_violations!(violating_constraints::Vector{Bool}, θ::T) where{T}
-            x, y = r*cos(θ), r*sin(θ)
-            @inbounds for i = 1:n
-                violating_constraints[i] = x*a1[i] + y*a2[i] - b[i] >= tol
-            end
-            return violating_constraints
-        end
-        violating_constraints = Vector{Bool}(undef, n)
+        violating_constraints = Array{Bool}(undef, n)
 
-        if !any(find_violations!(violating_constraints, θ))
+        if !any(find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ)))
             x, y = r*cos(θ), r*sin(θ)
         else
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
-            θ_low = θ0; θ_high = θ
+            θ_low = T(θ0); θ_high = T(θ)
+            θ = T(θ)
             # Binary Search
             for i = 1:100
-                find_violations!(violating_constraints, θ)
+                # violating_constraints = a1*r*cos(θ) + a2*r*sin(θ) - b .>= tol
+                find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ))
                 if any(violating_constraints) # && f_2d(r*cos(θ), r*sin(θ)) <= f_2d(x0, y0)
                     θ_high = θ
                     new_constraint = findlast(violating_constraints)
@@ -347,42 +391,42 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
                 x, y = x2, y2
             else
                 x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
+                end
             end
         end
+        if flip; y = -y; end
+
+        return x, y, new_constraint
     end
-    if flip; y = -y; end
 
-    return x, y, new_constraint
-end
+    function minimize_2d(data, d1, d2)
+        x0 = dot(data.x - data.x0, d1); y0 = dot(data.x - data.x0, d2)
+        z = data.x - x0*d1 - y0*d2
+        r = sqrt(x0^2 + y0^2)
 
-function minimize_2d(data, d1, d2)
-    x0 = dot(data.y, d1); y0 = dot(data.y, d2)
-    z = data.y - d1*x0 - d2*y0
-    r = sqrt(x0^2 + y0^2)
+        # Calculate 2d cost matrix [P11 P12
+        #                           P12 P22]
+        # and vector [q1; q2]
+        Pd1 = data.F.P*d1
+        P11 = dot(d1, Pd1)
+        q1 = dot(d1, data.q) + dot(Pd1, z)
 
-    # Calculate 2d cost matrix [P11 P12
-    #                           P12 P22]
-    # and vector [q1; q2]
-    Pd1 = data.F.ZPZ*d1
-    P11 = dot(d1, Pd1)
-    q1 = dot(d1, data.Zq) + dot(Pd1, z)
+        Pd2 = data.F.P*d2
+        P22 = dot(d2, Pd2)
+        P12 = dot(d1, Pd2)
+        q2 = dot(d2, data.q) + dot(Pd2, z)
+        P = [P11 P12; P12 P22]; q = [q1; q2]
 
-    Pd2 = data.F.ZPZ*d2
-    P22 = dot(d2, Pd2)
-    P12 = dot(d1, Pd2)
-    q2 = dot(d2, data.Zq) + dot(Pd2, z)
-    P = [P11 P12; P12 P22]; q = [q1; q2]
+        b = data.b_ignored - data.A_ignored*z
+        a1 = data.A_ignored*d1
+        a2 = data.A_ignored*d2
 
-    b = data.b_ignored - data.A_ignored*(data.F.Z*z + data.x0)
-    a1 = data.A_ignored*(data.F.Z*d1)
-    a2 = data.A_ignored*(data.F.Z*d2)
+        # Discard perfectly correlated constraints
+        idx = a1.^2 + a2.^2 .<= 1e-18
+        a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
 
-    # Discard perfectly correlated constraints
-    idx = a1.^2 + a2.^2 .<= 1e-18
-    a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
-
-    x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
-    @. data.y = z + x*d1 + y*d2
+        x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
+        data.x = z + x*d1 + y*d2
 
     return new_constraint
 end
@@ -409,28 +453,24 @@ end
 
 function isfeasible(data::Data{T}, x) where{T}
     tol = max(maximum(data.A*data.x - data.b), data.tolerance)
-    return all(data.A_ignored*(data.F.Z*x + data.x0) - data.b_ignored .<= data.tolerance)
+    return all(data.A_ignored*x - data.b_ignored .<= data.tolerance)
 end
 
 function f(data::Data{T}, x) where{T}
-    return dot(x, data.F.ZPZ*x)/2 + dot(x, data.Zq) + data.f0
+    return dot(x, data.F.P*x)/2 + dot(x, data.q)
 end
 
 function grad(data::Data{T}, x) where{T}
-    return data.F.ZPZ*x + data.Zq
+    return data.F.P*x + data.q
 end
 
-function projected_gradient(data::Data{T}, x) where{T}
-    if length(data.F.ZPZ) == 1 # This is because data.y is not always updated after adding a constraint
-        return 0*x
-    end
-
-    gradient = grad(data, x) 
-    F = qr([x gradient])
-    if minimum(size(F)) > 1
-        v = F.Q[:, 2]
-        return dot(v, gradient)*v
-    else
-        return 0*x
-    end
+function project(data, x)
+    return data.F.Z*(data.F.Z'*x)
 end
+
+#=
+function project(x)
+    F = qr(data.F.Z'*data.x)
+    return data.F.Z*(F.Q*(F.Q'*(data.F.Z'*g)))
+end
+=#

@@ -4,7 +4,12 @@ module eTRS
 
 using LinearAlgebra
 using Polynomials
-using GeneralQP
+# using GeneralQP
+include("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/GeneralQP.jl/src/GeneralQP.jl")
+using Main.eTRS.GeneralQP
+using SparseArrays
+using BenchmarkTools
+using Profile, ProfileView
 
 include("algebra.jl")
 include("extended_trs_boundary.jl")

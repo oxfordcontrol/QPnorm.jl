@@ -8,6 +8,7 @@ include("./subproblems.jl")
 using Main.eTRS
 using DataFrames
 using CSV
+# using Profile, ProfileView
 
 working_dir = pwd()
 path = "/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/CUTEst.jl/data/MASTSIF/"
@@ -22,7 +23,7 @@ df = DataFrame(name=String[], n = Int[], m = Int[],
     solution = [], solution_ipopt = [])
 
 for file in files
-    # file = string("HIMMELBJ", ".jld2")
+    file = string("MPC12", ".jld2")
     filepath = string(path, file)
     q = load(filepath, "q")
     P, q, A, b, x0 = load(filepath, "P", "q", "A", "b", "x0")
@@ -41,8 +42,29 @@ for file in files
     
     println("Solving problem: ", file[1:end-5], " with norm(x_init)=", norm(x_init))
     r = 10.0
-    # eTRS.solve(Matrix(P), q, Matrix(A), b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=5000); return
-    if false # file != "HIMMELBJ.jld2"
+    P = Matrix(P)
+    A = Matrix(A)
+    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=2000); return;
+    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1000);
+
+    #=
+    Profile.clear()		
+    Profile.@profile eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1000);# return nothing
+    Profile.clear()		
+    Profile.@profile eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1000);# return nothing
+    ProfileView.view()		
+    println("Press enter to continue...")		
+    readline(stdin)		
+    Profile.clear()		
+    Profile.@profile eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=200);# return nothing
+    Profile.clear()		
+    Profile.@profile eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=200);# return nothing
+    ProfileView.view()		
+    readline(stdin)		
+    println("Press enter to continue...")		
+    return
+    =#
+    if true # file != "HIMMELBJ.jld2"
         x_ipopt = Float64[]; f_ipopt = NaN; infeasibility_ipopt = NaN; t_ipopt = NaN
         try
             x_ipopt = solve_ipopt(P, q, A, b, r, x_init)
