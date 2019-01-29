@@ -141,6 +141,7 @@ end
 
 function iterate!(data::Data{T}) where{T}
     _iterate!(data)
+    #=
     _iterate!(data)
     Profile.clear()		
     Profile.@profile _iterate!(data)
@@ -149,6 +150,7 @@ function iterate!(data::Data{T}) where{T}
     ProfileView.view()		
     println("Press enter to continue...")		
     readline(stdin)	
+    =#
 end
 
 function nullspace_projector!(M, A, λ, x)
@@ -194,6 +196,7 @@ function _iterate!(data::Data{T}) where{T}
         end
     end
     if !isnan(new_constraint)
+        # print("  A", data.ignored_set[new_constraint], "  ")
         add_constraint!(data, new_constraint)
     end
     if isnan(new_constraint) || data.F.m <= 1
@@ -225,6 +228,7 @@ function check_kkt!(data)
         data.done = true
         data.removal_idx = 0
     else
+        @show minimum(λ)
         data.removal_idx = argmin(λ)
     end
 
@@ -265,14 +269,15 @@ function gradient_steps(data, max_iter=1e6)
     k = 0;
     new_constraint = NaN
     while isnan(new_constraint) && k < max_iter
-        d1 = data.x - data.x0; d1 ./= norm(d1)
+        d1 = data.x - data.x0;
+        d1 ./= norm(d1)
         d2 = project(data, grad(data, data.x))
         if norm(d2 - dot(d1, d2)*d1) <= 1e-7
             break
         end
         # if norm(project_grad) <= 1e-8 # ToDo relative to objective value
         # end
-        Q = qr([data.x - data.x0 project(data, grad(data, data.x))]).Q*Matrix(I, data.n, 2)
+        Q = qr([d1 d2]).Q*Matrix(I, data.n, 2)
         new_constraint = minimize_2d(data, Q[:, 1], Q[:, 2])
         k += 1
         if mod(k, 500) == 0
@@ -318,10 +323,10 @@ function curvature_step(data, y_global)
     return new_constraint
 end
 
-function find_violations!(violating_constraints::Vector{Bool}, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x::T, y::T) where{T}
+function find_violations!(violating_constraints::Vector{Bool}, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x::T, y::T, tol::T) where{T}
     n = length(a1)
     @inbounds for i = 1:n
-        violating_constraints[i] = x*a1[i] + y*a2[i] >= b[i]
+        violating_constraints[i] = x*a1[i] + y*a2[i] - b[i] >= tol
     end
     return violating_constraints
 end
@@ -360,73 +365,73 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
 
         n = length(b)
         violating_constraints = Array{Bool}(undef, n)
-
-        if !any(find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ)))
+        if infeasibility(r*cos(θ), r*sin(θ)) <= tol
             x, y = r*cos(θ), r*sin(θ)
         else
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
             θ_low = T(θ0); θ_high = T(θ)
             θ = T(θ)
             # Binary Search
+            f0 = Inf; x = NaN; y = NaN
             for i = 1:100
-                # violating_constraints = a1*r*cos(θ) + a2*r*sin(θ) - b .>= tol
-                find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ))
-                if any(violating_constraints) # && f_2d(r*cos(θ), r*sin(θ)) <= f_2d(x0, y0)
+                find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol)
+                if any(violating_constraints)
                     θ_high = θ
-                    new_constraint = findlast(violating_constraints)
+                    idx = findlast(violating_constraints) # We're lazy here, we could check all of them
+                    x1, y1, x2, y2 = circle_line_intersections(a1[idx], a2[idx], b[idx], r)
+                    if infeasibility(x1, y1) <= tol
+                        x, y = x1, y1
+                        new_constraint = idx
+                    end
+                    if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y2)
+                        x, y = x2, y2
+                        new_constraint = idx
+                    end
+                    if !isnan(new_constraint); break; end
                 else
                     θ_low = θ
                 end
                 θ = θ_low + (θ_high - θ_low)/2
             end
-
-            x1, y1, x2, y2 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b[new_constraint], r)
-            if infeasibility(x1, y1) <= tol
-                if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y1)
-                    x, y = x2, y2
-                else
-                    x, y = x1, y1
-                end
-            elseif infeasibility(x2, y2) <= tol
-                x, y = x2, y2
-            else
-                x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
-                end
+            # @assert !isnan(x) && !isnan(y) && !isnan(new_constraint)
+            if isnan(new_constraint)
+                x, y = r*cos(θ), r*sin(θ)
             end
         end
-        if flip; y = -y; end
-
-        return x, y, new_constraint
     end
+    if flip; y = -y; end
 
-    function minimize_2d(data, d1, d2)
-        x0 = dot(data.x - data.x0, d1); y0 = dot(data.x - data.x0, d2)
-        z = data.x - x0*d1 - y0*d2
-        r = sqrt(x0^2 + y0^2)
+    return x, y, new_constraint
+end
 
-        # Calculate 2d cost matrix [P11 P12
-        #                           P12 P22]
-        # and vector [q1; q2]
-        Pd1 = data.F.P*d1
-        P11 = dot(d1, Pd1)
-        q1 = dot(d1, data.q) + dot(Pd1, z)
+function minimize_2d(data, d1, d2)
+    x0 = dot(data.x - data.x0, d1); y0 = dot(data.x - data.x0, d2)
+    z = data.x - x0*d1 - y0*d2
+    r = sqrt(x0^2 + y0^2)
 
-        Pd2 = data.F.P*d2
-        P22 = dot(d2, Pd2)
-        P12 = dot(d1, Pd2)
-        q2 = dot(d2, data.q) + dot(Pd2, z)
-        P = [P11 P12; P12 P22]; q = [q1; q2]
+    # Calculate 2d cost matrix [P11 P12
+    #                           P12 P22]
+    # and vector [q1; q2]
+    Pd1 = data.F.P*d1
+    P11 = dot(d1, Pd1)
+    q1 = dot(d1, data.q) + dot(Pd1, z)
 
-        b = data.b_ignored - data.A_ignored*z
-        a1 = data.A_ignored*d1
-        a2 = data.A_ignored*d2
+    Pd2 = data.F.P*d2
+    P22 = dot(d2, Pd2)
+    P12 = dot(d1, Pd2)
+    q2 = dot(d2, data.q) + dot(Pd2, z)
+    P = [P11 P12; P12 P22]; q = [q1; q2]
 
-        # Discard perfectly correlated constraints
-        idx = a1.^2 + a2.^2 .<= 1e-18
-        a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
+    b = data.b_ignored - data.A_ignored*z
+    a1 = data.A_ignored*d1
+    a2 = data.A_ignored*d2
 
-        x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
-        data.x = z + x*d1 + y*d2
+    # Discard perfectly correlated constraints
+    idx = a1.^2 + a2.^2 .<= 1e-18
+    a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
+
+    x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
+    data.x = z + x*d1 + y*d2
 
     return new_constraint
 end
