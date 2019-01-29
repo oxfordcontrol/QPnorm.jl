@@ -21,32 +21,27 @@ mutable struct Data{T}
     stored in a continuous manner. This allows efficient use of BLAS.
     """
     x::Vector{T}  # Variable of the minimization problem
-    x_g::Array{T}
-    y::Vector{T}  # Reduced variable on the nullspace of the working constraints
-    x0::Vector{T} # x - F.Z'*y
-    f0::T # Constant term in reduced TRS
+    x0::Vector{T} # x - projection(x) where projection is onto the nullspace of the working constraints
 
     n::Int  # length(x)
     m::Int  # Number of constraints
 
-    F::NullspaceHessian{T}  # See first comments on the definition of Data
+    P::SparseMatrixCSC{T}
     q::Vector{T}
-    Zq::Vector{T} # Reduced linear cost
-    A::Matrix{T}
+    A::SparseMatrixCSC{T}
     b::Vector{T}
     r::T
     working_set::Vector{Int}
     ignored_set::Vector{Int}
-    Ax0::Vector{T}
-    Px0::Vector{T}
 
     done::Bool
     removal_idx::Int
 
-    A_ignored::SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int}, Base.Slice{Base.OneTo{Int}}}, false}
-    b_ignored::SubArray{T, 1, Vector{T}, Tuple{UnitRange{Int}}, true}
-    A_shuffled::Matrix{T}  # That's where A_ignored "views into"
-    b_shuffled::Vector{T}  # That's where b_ignored "views into"
+    Xmin::Array{T} # Last TRS minimizer(s)
+    eig_max::T # Maximum eigenvalue of P
+
+    F  # Auxilliary matrix of Pardiso
+    ps # Pardiso object
 
     # Options
     tolerance::T
@@ -61,9 +56,10 @@ mutable struct Data{T}
     trs_choice::Char
     grad_steps::Int
     eigen_steps::Int
+    timings::DataFrame
 
-    # Timings
     #=
+    # Timings
     t_global_trs::Vector{T}
     t_local_trs::Vector{T}
     t_gradient::Vector{T}
@@ -73,7 +69,7 @@ mutable struct Data{T}
     t_kkt::Vector{T}
     =#
 
-    function Data(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T},
+    function Data(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T},
         r::T, x::Vector{T}; kwargs...) where T
 
         m, n = size(A)
@@ -83,40 +79,62 @@ mutable struct Data{T}
         end
         ignored_set = setdiff(1:m, working_set)
 
-        QR = UpdatableQR(A[working_set, :]')
-        A_shuffled = zeros(T, m, n)
-        l = length(ignored_set)
-        A_shuffled[end-l+1:end, :] .= view(A, ignored_set, :)
-        b_shuffled = zeros(T, m)
-        b_shuffled[end-l+1:end] .= view(b, ignored_set)
-
-        Data(P, q, A, b, r, x,
-            QR, working_set, ignored_set,
-            A_shuffled, b_shuffled; kwargs...)
+        Data(P, q, A, b, r, x, working_set, ignored_set; kwargs...)
     end
 
-    function Data(P::Matrix{T}, q::Vector{T},  A::Matrix{T}, b::Vector{T}, r::T, x::Vector{T},
-        QR::UpdatableQR{T}, working_set::Vector{Int}, ignored_set::Vector{Int},
-        A_shuffled::Matrix{T}, b_shuffled::Vector{T};
+    function Data(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T, x::Vector{T},
+        working_set::Vector{Int}, ignored_set::Vector{Int};
         verbosity=1, printing_interval=50, tolerance=1e-11) where T
-
-        F = NullspaceHessian{T}(P, QR)
-        l = length(ignored_set)
 
         m, n = size(A)
         λ = zeros(T, m);
-
-        new{T}(x, zeros(T, 0), zeros(T, 0), zeros(T, 0), 0.0,
-            n, m, F, q, zeros(T, 0), A, b, r, working_set, ignored_set,
-            A*(x/norm(x)), P*(x/norm(x)), false, 0,
-            view(A_shuffled, m-l+1:m, :),
-            view(b_shuffled, m-l+1:m),
-            A_shuffled, b_shuffled,
+        new{T}(x, zeros(T, 0),
+            n, m,
+            P, q, A, b, r,
+            working_set, ignored_set,
+            false, 0,
+            zeros(T, 0),
+            eigs(P, nev=1, which=:LR, ritzvec=false)[1][1],
+            nothing, nothing,
             T(tolerance), verbosity, printing_interval,  # Options
             0, λ, 0, NaN, '-', 0, 0,  # Logging
-            # zeros(T, 0), zeros(T, 0), zeros(T, 0), zero(T, 0), zero(T), zero(T), zero(T)
+            DataFrame(projection=zeros(T, 0), gradient_steps=zeros(T, 0),
+                trs=zeros(T, 0), trs_local=zeros(T, 0),
+                move_to_optimizer=zeros(T, 0), move_to_local_optimizer=zeros(T, 0),
+                curvature_step=zeros(T, 0), kkt=zeros(T, 0),
+                add_constraint=zeros(T, 0), remove_constraint=zeros(T, 0))
         )
     end
+end
+
+function fact(data)
+    if data.ps == nothing
+        data.ps = MKLPardisoSolver()
+    end
+    A_working = SparseMatrixCSC(data.A[data.working_set, :])
+    M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
+    set_iparm!(data.ps, 1, 1) # Enable parameters
+    set_iparm!(data.ps, 11, 1) # Scaling
+    set_iparm!(data.ps, 13, 1) # weighted matchings
+    set_iparm!(data.ps, 8, 2) # Max number of iterative refinement steps. MAYBE this is too big?
+    set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
+    set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
+    data.F = get_matrix(data.ps, M, :T)
+    pardiso(data.ps, zeros(size(M, 1)), data.F, zeros(size(M, 1)))
+end
+
+function remove_constraint!(data, idx::Int)
+    constraint_idx = data.working_set[idx]
+    prepend!(data.ignored_set, constraint_idx)
+    deleteat!(data.working_set, idx)
+    fact(data)
+end
+
+function add_constraint!(data, idx::Int)
+    constraint_idx = data.ignored_set[idx]
+    deleteat!(data.ignored_set, idx)
+    append!(data.working_set, constraint_idx)
+    fact(data)
 end
 
 function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
@@ -153,59 +171,69 @@ function iterate!(data::Data{T}) where{T}
     =#
 end
 
-function nullspace_projector!(M, A, λ, x)
-    mul!(λ, A, x)
-    λ = M\λ
-    # BLAS.gemv!('T', -1.0, A, λ, 1.0, x)
-    x .-= A'*λ
-    return x 
-end
-
 function _iterate!(data::Data{T}) where{T}
+    t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
+    t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
+
     if data.removal_idx > 0
-        remove_constraint!(data, data.removal_idx)
+        t_remove = @elapsed remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
     end
 
-    data.x0 = data.x - project(data, data.x)
-    new_constraint = gradient_steps(data, 5)
+    t_proj = @elapsed data.x0 = data.x - project(data, data.x)
+    if sqrt(data.r^2 - norm(data.x0)^2) <= 1e-10
+        @warn "LICQ failed. Terminating"
+        data.done = true
+        return
+    end
+
+    t_grad = @elapsed new_constraint = gradient_steps(data, 5)
 
     if isnan(new_constraint)
-        q_ = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q 
-        r_ = sqrt(data.r^2 - norm(data.x0)^2)
-        if r_ <= 1e-10
-            @warn "LICQ failed. Terminating"
-            data.done = true
-            return
-        end
-        Ymin, info = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11)
-        new_constraint, is_minimizer = move_towards_optimizers!(data, data.F.Z*Ymin .+ data.x0)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-11)
+        # @show norm((data.A*(Xmin .- data.x0))[data.working_set])
+        #=
+        q_ = data.F.Z'*(data.q + data.P*data.x0) # Reduced q 
+        Ymin, info_ = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11)
+        @show info.λ - info_.λ
+        =#
+        t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
-            Ymin, info = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11, compute_local=true)
-            new_constraint, is_minimizer = move_towards_optimizers!(data, data.F.Z*Ymin .+ data.x0)
+            t_trs_l = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-11, compute_local=true)
+            t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
             if isnan(new_constraint) && !is_minimizer
-                new_constraint = gradient_steps(data)
+                t_grad += @elapsed new_constraint = gradient_steps(data)
                 if isnan(new_constraint)
-                    new_constraint = curvature_step(data, Ymin[:, 1])
+                    t_curv = @elapsed new_constraint = curvature_step(data, Ymin[:, 1], info)
                 end
-            else
-                data.x_g = data.x0 .+ data.F.Z*Ymin;
             end
-        else
-            data.x_g = data.x0 .+ data.F.Z*Ymin;
         end
     end
     if !isnan(new_constraint)
-        # print("  A", data.ignored_set[new_constraint], "  ")
-        add_constraint!(data, new_constraint)
+        t_add = @elapsed add_constraint!(data, new_constraint)
     end
-    if isnan(new_constraint) || data.F.m <= 1
-        data.removal_idx = check_kkt!(data)
+    if isnan(new_constraint) || data.n - length(data.working_set) <= 1
+        t_kkt = @elapsed data.removal_idx = check_kkt!(data)
+    end
+    
+    push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
+    if data.done
+        data.timings |> CSV.write(string("timings.csv"))
     end
     data.iteration += 1
 end
 
 function check_kkt!(data)
+    g = grad(data, data.x)
+    λ = kkt(data, -g - data.μ*data.x)
+    # show(stdout, "text/plain", [x_ data.x])
+    # @show norm(data.x - x_)
+    # @show norm(x_), data.r
+    #=
+    multipliers = [data.A[data.working_set, :]' data.x]\(-g)
+    @show multipliers[end] - data.μ
+    show(stdout, "text/plain", [multipliers[1:end-1] λ multipliers[1:end-1]-λ]); println()
+    @assert false
     F = qr(data.F.Z'*data.x)
     R = view(data.F.QR.R, 1:data.F.QR.m+1, 1:data.F.QR.m+1)
     R[1:end-1, end] = data.F.QR.Q1'*data.x
@@ -214,13 +242,10 @@ function check_kkt!(data)
     g = grad(data, data.x)
     Qg = -[data.F.QR.Q1'*g; (F.Q'*(data.F.QR.Q2'*g))[1]]
     multipliers = UpperTriangular(R)\Qg
-
-    λ = multipliers[1:end-1]
-    μ = multipliers[end]
+    =#
 
     data.λ .= 0
     data.λ[data.working_set] .= λ
-    data.μ = μ
 
     data.residual = norm(g + data.A'*data.λ + data.x*data.μ)
     # data.residual = norm(Qg[length(λ)+1:end])
@@ -228,16 +253,17 @@ function check_kkt!(data)
         data.done = true
         data.removal_idx = 0
     else
-        @show minimum(λ)
+        # @show minimum(λ)
         data.removal_idx = argmin(λ)
     end
 
     return data.removal_idx
 end
 
-function move_towards_optimizers!(data, X)
+function move_towards_optimizers!(data, X, info)
     if isfeasible(data, X[:, 1])
         data.x = X[:, 1]
+        data.μ = info.λ[1]
         return NaN, true
     end
 
@@ -258,6 +284,11 @@ function move_towards_optimizers!(data, X)
     if isnan(new_constraint)
         if how_many > 1 || norm(data.x - X[:, 1])/data.r <= 1e-5
             @show norm(data.x - X[:, 1])
+            if how_many == 1 || norm(data.x - X[:, 1]) <= norm(data.x - X[:, 2])
+                data.μ = info.λ[1]
+            else
+                data.μ = info.λ[2]
+            end
             is_minimizer = true
         end
     end
@@ -344,7 +375,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
     end
 
     infeasibility(x, y) = maximum(a1*x + a2*y - b)
-    tol = T(max(1e-12, 1.2*infeasibility(x0, y0)))
+    tol = T(max(1e-11, 1.01*infeasibility(x0, y0)))
 
     new_constraint = NaN
     X, info = trs_boundary_small(P, q, r; compute_local=true)
@@ -412,22 +443,22 @@ function minimize_2d(data, d1, d2)
     # Calculate 2d cost matrix [P11 P12
     #                           P12 P22]
     # and vector [q1; q2]
-    Pd1 = data.F.P*d1
+    Pd1 = data.P*d1
     P11 = dot(d1, Pd1)
     q1 = dot(d1, data.q) + dot(Pd1, z)
 
-    Pd2 = data.F.P*d2
+    Pd2 = data.P*d2
     P22 = dot(d2, Pd2)
     P12 = dot(d1, Pd2)
     q2 = dot(d2, data.q) + dot(Pd2, z)
     P = [P11 P12; P12 P22]; q = [q1; q2]
 
-    b = data.b_ignored - data.A_ignored*z
-    a1 = data.A_ignored*d1
-    a2 = data.A_ignored*d2
+    b = (data.b - data.A*z)[data.ignored_set]
+    a1 = (data.A*d1)[data.ignored_set]
+    a2 = (data.A*d2)[data.ignored_set]
 
-    # Discard perfectly correlated constraints
-    idx = a1.^2 + a2.^2 .<= 1e-18
+    # Discard perfectly correlated constraints. Be careful with this, especially on debugging.
+    idx = a1.^2 + a2.^2 .<= 1e-17
     a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
 
     x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
@@ -457,21 +488,47 @@ function angle(x1, y1, x2, y2)
 end
 
 function isfeasible(data::Data{T}, x) where{T}
-    tol = max(maximum(data.A*data.x - data.b), data.tolerance)
-    return all(data.A_ignored*x - data.b_ignored .<= data.tolerance)
+    tol = max(1.5*maximum(data.A*data.x - data.b), data.tolerance)
+    return all(data.A*x - data.b .<= data.tolerance)
 end
 
 function f(data::Data{T}, x) where{T}
-    return dot(x, data.F.P*x)/2 + dot(x, data.q)
+    return dot(x, data.P*x)/2 + dot(x, data.q)
 end
 
 function grad(data::Data{T}, x) where{T}
-    return data.F.P*x + data.q
+    return data.P*x + data.q
 end
 
 function project(data, x)
+    z = [x; zeros(length(data.working_set))]
+    y = similar(z)
+    set_phase!(data.ps, 33) # Solve, iterative refinement
+    pardiso(data.ps, y, data.F, z)
+    return y[1:data.n]
+end
+
+function kkt(data, g)
+    z = [g; zeros(length(data.working_set))]
+    y = similar(z)
+    set_phase!(data.ps, 33) # Solve, iterative refinement
+    pardiso(data.ps, y, data.F, z)
+    return y[data.n+1:end]
+end
+
+#=
+function project(data, x)
     return data.F.Z*(data.F.Z'*x)
 end
+=#
+
+#=
+function project(data, x)
+    λ = data.A_*x
+    λ = data.F_\λ
+    return x - data.A_'*λ
+end
+=#
 
 #=
 function project(x)

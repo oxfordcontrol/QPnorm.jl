@@ -42,10 +42,9 @@ for file in files
     
     println("Solving problem: ", file[1:end-5], " with norm(x_init)=", norm(x_init))
     r = 10.0
-    P = Matrix(P)
-    A = Matrix(A)
-    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=2000); return;
-    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1000);
+    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1300);
+    eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1300);
+    return
 
     #=
     Profile.clear()		

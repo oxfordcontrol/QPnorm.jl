@@ -1,4 +1,4 @@
-function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
+function solve(P::AbstractMatrix{T}, q::Vector{T}, A::AbstractMatrix{T}, b::Vector{T}, r::T,
     x::Vector{T}; max_iter=Inf, kwargs...) where T 
 
     @show @elapsed boundary_data, interior_data = create_data(P, q, A, b, r, x; kwargs...)
@@ -41,11 +41,10 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
 end
 
 function create_data(P, q, A, b, r, x_init; kwargs...)
-    interior_data = GeneralQP.Data(P, q, A, b, x_init; kwargs..., r_max=r)
-    # interior_data.verbosity = 0
+    interior_data = GeneralQP.Data(Matrix(P), q, Matrix(A), b, x_init; kwargs..., r_max=r)
+    interior_data.verbosity = 0
     boundary_data = Data(P, q, A, b, r, x_init,
-        interior_data.F.QR, interior_data.working_set, interior_data.ignored_set,
-        interior_data.A_shuffled, interior_data.b_shuffled; kwargs...)
+        interior_data.working_set, interior_data.ignored_set; kwargs...)
     return boundary_data, interior_data
 end
 
@@ -79,15 +78,10 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
     etrs.iteration = qp.iteration
     etrs.x = qp.x
     # We only have to recompute etrs.F.ZPZ
-    etrs.F.m = etrs.F.QR.n - etrs.F.QR.m
-    GeneralQP.update_views!(etrs.F)
-    etrs.F.ZPZ .= etrs.F.Z'*etrs.F.P*etrs.F.Z
-    etrs.F.ZPZ .= (etrs.F.ZPZ + etrs.F.ZPZ')/2
-    if etrs.F.m <= 1
-        etrs.y = etrs.F.Z'*etrs.x
-        etrs.x0 = etrs.x - etrs.F.Z*etrs.y
-        etrs.Zq = etrs.F.Z'*(etrs.q + etrs.F.P*etrs.x0) # Reduced q
-        if norm(etrs.y) <= 1e-10
+    if etrs.n - length(etrs.working_set) <= 1
+        fact(etrs)
+        etrs.x0 = etrs.x - project(data, data.x)
+        if sqrt(etrs.r^2 - norm(etrs.x0)^2) <= 1e-10
             @warn "LICQ failed. Terminating"
             etrs.done = true
         else
@@ -96,9 +90,8 @@ function update_data!(etrs::Data, qp::GeneralQP.Data)
             !etrs.done && idx <= length(etrs.working_set) && remove_constraint!(etrs, idx)
         end
     end
-    GeneralQP.update_views!(etrs)
-    etrs.Px0 = etrs.F.P*(etrs.x/norm(etrs.x))
-    etrs.Ax0 = etrs.A*(etrs.x/norm(etrs.x))
+    # GeneralQP.update_views!(etrs)
+    fact(etrs)
     if etrs.verbosity > 0
         print_header(etrs)
         # (mod(etrs.iteration + 1, etrs.printing_interval) != 0) && print_info(etrs)
