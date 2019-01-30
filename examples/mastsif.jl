@@ -8,6 +8,7 @@ include("./subproblems.jl")
 using Main.eTRS
 using DataFrames
 using CSV
+using SparseArrays
 # using Profile, ProfileView
 
 working_dir = pwd()
