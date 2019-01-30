@@ -112,6 +112,7 @@ function fact(data)
         data.ps = MKLPardisoSolver()
         set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
         pardisoinit(data.ps) # Set default options for real, symmetric indefinite matrices
+        # set_nprocs!(data.ps, 8) # Number of threads used by MKL pardiso. Warning: BLAS is recommened to be single threaded.
         set_iparm!(data.ps, 1, 1) # Enable parameters
         set_iparm!(data.ps, 11, 1) # Scaling
         set_iparm!(data.ps, 13, 1) # weighted matchings
@@ -119,7 +120,7 @@ function fact(data)
     end
     A_working = SparseMatrixCSC(data.A[data.working_set, :])
     M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
-    data.F = get_matrix(data.ps, M, :T)
+    data.F = get_matrix(data.ps, M, :N)
     set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
     pardiso(data.ps, zeros(size(M, 1)), data.F, zeros(size(M, 1)))
 end

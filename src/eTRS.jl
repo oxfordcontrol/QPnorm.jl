@@ -2,10 +2,10 @@ __precompile__(true)
 
 module eTRS
 
-using LinearAlgebra
+using LinearAlgebra, SparseArrays
 using Polynomials
 using GeneralQP
-# include("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/GeneralQP.jl/src/GeneralQP.jl")
+# kinclude("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/GeneralQP.jl/src/GeneralQP.jl")
 using Main.eTRS.GeneralQP
 using SparseArrays
 using BenchmarkTools
