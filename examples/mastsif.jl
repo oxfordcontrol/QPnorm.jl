@@ -42,6 +42,8 @@ for file in files
     
     println("Solving problem: ", file[1:end-5], " with norm(x_init)=", norm(x_init))
     r = 10.0
+    x_ipopt = solve_ipopt(P, q, A, b, r, x_init)
+    @show @elapsed x_ipopt = solve_ipopt(P, q, A, b, r, x_init)
     eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1300);
     eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=500, max_iter=1300);
     return

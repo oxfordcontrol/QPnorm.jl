@@ -9,9 +9,10 @@ using GeneralQP
 using Main.eTRS.GeneralQP
 using SparseArrays
 using BenchmarkTools
-using Profile, ProfileView
+# using Profile, ProfileView
 using Pardiso
-using DataFrames
+using Statistics
+using DataFrames, CSV
 
 include("algebra.jl")
 include("extended_trs_boundary.jl")

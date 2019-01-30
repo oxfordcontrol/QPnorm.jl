@@ -110,16 +110,17 @@ end
 function fact(data)
     if data.ps == nothing
         data.ps = MKLPardisoSolver()
+        set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
+        pardisoinit(data.ps) # Set default options for real, symmetric indefinite matrices
+        set_iparm!(data.ps, 1, 1) # Enable parameters
+        set_iparm!(data.ps, 11, 1) # Scaling
+        set_iparm!(data.ps, 13, 1) # weighted matchings
+        # set_iparm!(data.ps, 8, 1) # Max number of iterative refinement steps. MAYBE this is too big?
     end
     A_working = SparseMatrixCSC(data.A[data.working_set, :])
     M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
-    set_iparm!(data.ps, 1, 1) # Enable parameters
-    set_iparm!(data.ps, 11, 1) # Scaling
-    set_iparm!(data.ps, 13, 1) # weighted matchings
-    set_iparm!(data.ps, 8, 2) # Max number of iterative refinement steps. MAYBE this is too big?
-    set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
-    set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
     data.F = get_matrix(data.ps, M, :T)
+    set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
     pardiso(data.ps, zeros(size(M, 1)), data.F, zeros(size(M, 1)))
 end
 
@@ -190,7 +191,7 @@ function _iterate!(data::Data{T}) where{T}
     t_grad = @elapsed new_constraint = gradient_steps(data, 5)
 
     if isnan(new_constraint)
-        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-11)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-12)
         # @show norm((data.A*(Xmin .- data.x0))[data.working_set])
         #=
         q_ = data.F.Z'*(data.q + data.P*data.x0) # Reduced q 
@@ -199,7 +200,7 @@ function _iterate!(data::Data{T}) where{T}
         =#
         t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
-            t_trs_l = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-11, compute_local=true)
+            t_trs_l = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-12, compute_local=true)
             t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
             if isnan(new_constraint) && !is_minimizer
                 t_grad += @elapsed new_constraint = gradient_steps(data)
@@ -219,6 +220,9 @@ function _iterate!(data::Data{T}) where{T}
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
     if data.done
         data.timings |> CSV.write(string("timings.csv"))
+        sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
+        labels =  names(data.timings)
+        show(stdout, "text/plain", [labels sums]); println()
     end
     data.iteration += 1
 end
@@ -489,7 +493,7 @@ end
 
 function isfeasible(data::Data{T}, x) where{T}
     tol = max(1.5*maximum(data.A*data.x - data.b), data.tolerance)
-    return all(data.A*x - data.b .<= data.tolerance)
+    return all(data.A*x - data.b .<= tol)
 end
 
 function f(data::Data{T}, x) where{T}
