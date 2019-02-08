@@ -2,6 +2,7 @@ using LinearAlgebra
 using Arpack
 using LinearMaps
 using SparseArrays
+using Printf
 
 mutable struct Data{T}
     """
@@ -111,15 +112,20 @@ function fact(data)
     if data.ps == nothing
         data.ps = MKLPardisoSolver()
         set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
-        pardisoinit(data.ps) # Set default options for real, symmetric indefinite matrices
-        # set_nprocs!(data.ps, 8) # Number of threads used by MKL pardiso. Warning: BLAS is recommened to be single threaded.
+        pardisoinit(data.ps) # Set default options for the matrix type we have chosen
+        # set_nprocs!(data.ps, 4) # Number of threads used by MKL pardiso. Warning: BLAS is recommened to be single threaded.
         set_iparm!(data.ps, 1, 1) # Enable parameters
+        # set_iparm!(data.ps, 25, 1) # Parallelize forward/backward solve
         set_iparm!(data.ps, 11, 1) # Scaling
         set_iparm!(data.ps, 13, 1) # weighted matchings
-        # set_iparm!(data.ps, 8, 1) # Max number of iterative refinement steps. MAYBE this is too big?
+        # set_iparm!(data.ps, 8, 6) # Max number of iterative refinement steps. MAYBE this is too big?
     end
     A_working = SparseMatrixCSC(data.A[data.working_set, :])
-    M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
+    if length(A_working) > 0
+        M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
+    else
+        M = SparseMatrixCSC(1.0*I, data.n, data.n)
+    end
     data.F = get_matrix(data.ps, M, :N)
     set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
     pardiso(data.ps, zeros(size(M, 1)), data.F, zeros(size(M, 1)))
@@ -139,9 +145,10 @@ function add_constraint!(data, idx::Int)
     fact(data)
 end
 
-function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
+function solve_boundary(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T,
     x::Vector{T}; max_iter=Inf, kwargs...) where T
     data = Data(P, q, A, b, r, x; kwargs...)
+    fact(data)
 
     if data.verbosity > 0
         print_header(data)
@@ -162,11 +169,10 @@ end
 function iterate!(data::Data{T}) where{T}
     _iterate!(data)
     #=
-    _iterate!(data)
     Profile.clear()		
-    Profile.@profile _iterate!(data)
+    Profile.@profile for i = 1:100; _iterate!(data); end
     Profile.clear()		
-    Profile.@profile _iterate!(data)
+    Profile.@profile for i = 1:100; _iterate!(data); end
     ProfileView.view()		
     println("Press enter to continue...")		
     readline(stdin)	
@@ -177,6 +183,7 @@ function _iterate!(data::Data{T}) where{T}
     t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
     t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
 
+    @assert maximum(data.A*data.x - data.b) <= 1e-10
     if data.removal_idx > 0
         t_remove = @elapsed remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
@@ -191,8 +198,18 @@ function _iterate!(data::Data{T}) where{T}
 
     t_grad = @elapsed new_constraint = gradient_steps(data, 5)
 
+    @assert maximum(data.A*data.x - data.b) <= 1e-10
     if isnan(new_constraint)
-        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-12)
+        projection! = x -> project!(data, x)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, projection!, data.x, data.eig_max, tol=1e-12)
+        #=
+        Profile.init(n = 10^8, delay = 1e-5)
+        Profile.clear()
+        Profile.@profile trs_boundary(data.P, data.q, data.r, projection!, data.x, data.eig_max, tol=1e-12)
+        ProfileView.view()		
+        println("Press enter to continue...")		
+        readline(stdin)	
+        =#
         # @show norm((data.A*(Xmin .- data.x0))[data.working_set])
         #=
         q_ = data.F.Z'*(data.q + data.P*data.x0) # Reduced q 
@@ -224,7 +241,9 @@ function _iterate!(data::Data{T}) where{T}
         sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
         labels =  names(data.timings)
         show(stdout, "text/plain", [labels sums]); println()
+        @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
     end
+    @assert maximum(data.A*data.x - data.b) <= 1e-10
     data.iteration += 1
 end
 
@@ -308,7 +327,8 @@ function gradient_steps(data, max_iter=1e6)
         d1 = data.x - data.x0;
         d1 ./= norm(d1)
         d2 = project(data, grad(data, data.x))
-        if norm(d2 - dot(d1, d2)*d1) <= 1e-7
+        # @show norm(d2 - dot(d1, d2)*d1)
+        if norm(d2 - dot(d1, d2)*d1) <= 1e-6
             break
         end
         # if norm(project_grad) <= 1e-8 # ToDo relative to objective value
@@ -408,18 +428,19 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
             θ_low = T(θ0); θ_high = T(θ)
             θ = T(θ)
             # Binary Search
-            f0 = Inf; x = NaN; y = NaN
-            for i = 1:100
+            # f0 = f_2d(x0, y0)
+            f0 = f_2d(x0, y0); x = NaN; y = NaN; idx = NaN
+            for i = 1:80
                 find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol)
                 if any(violating_constraints)
                     θ_high = θ
                     idx = findlast(violating_constraints) # We're lazy here, we could check all of them
                     x1, y1, x2, y2 = circle_line_intersections(a1[idx], a2[idx], b[idx], r)
-                    if infeasibility(x1, y1) <= tol
+                    if !any(find_violations!(violating_constraints, a1, a2, b, x1, y1, tol))
                         x, y = x1, y1
                         new_constraint = idx
                     end
-                    if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y2)
+                    if (f_2d(x2, y2) <= f_2d(x1, y2) || isnan(new_constraint)) && !any(find_violations!(violating_constraints, a1, a2, b, x2, y2, tol))
                         x, y = x2, y2
                         new_constraint = idx
                     end
@@ -431,7 +452,10 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
             end
             # @assert !isnan(x) && !isnan(y) && !isnan(new_constraint)
             if isnan(new_constraint)
+                @warn "No constraint in minimize 2d"
+                # new_constraint = idx
                 x, y = r*cos(θ), r*sin(θ)
+                new_constraint = find_violations!(violating_constraints, a1, a2, b, x, y, tol)
             end
         end
     end
@@ -463,7 +487,7 @@ function minimize_2d(data, d1, d2)
     a2 = (data.A*d2)[data.ignored_set]
 
     # Discard perfectly correlated constraints. Be careful with this, especially on debugging.
-    idx = a1.^2 + a2.^2 .<= 1e-17
+    idx = a1.^2 + a2.^2 .<= 1e-16
     a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
 
     x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
@@ -511,6 +535,14 @@ function project(data, x)
     set_phase!(data.ps, 33) # Solve, iterative refinement
     pardiso(data.ps, y, data.F, z)
     return y[1:data.n]
+end
+
+function project!(data::Data{T}, x::AbstractVector{T}) where {T}
+    z = [x; zeros(T, length(data.working_set))]
+    y = similar(z)
+    set_phase!(data.ps, 33) # Solve, iterative refinement
+    pardiso(data.ps, y, data.F, z)
+    copyto!(x, view(y, 1:data.n))
 end
 
 function kkt(data, g)

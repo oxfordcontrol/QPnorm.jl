@@ -42,7 +42,7 @@ end
 
 function create_data(P, q, A, b, r, x_init; kwargs...)
     interior_data = GeneralQP.Data(Matrix(P), q, Matrix(A), b, x_init; kwargs..., r_max=r)
-    interior_data.verbosity = 0
+    # interior_data.verbosity = 0
     boundary_data = Data(P, q, A, b, r, x_init,
         interior_data.working_set, interior_data.ignored_set; kwargs...)
     return boundary_data, interior_data
