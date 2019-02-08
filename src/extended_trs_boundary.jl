@@ -12,12 +12,6 @@ mutable struct Data{T}
                     ‖x‖ = r
     with an active set algorithm.
 
-    The most important element is F, which holds
-    - F.QR:  an updatable QR factorization of the working constraints
-    - F.Z:   a view on an orthonormal matrix spanning the nullspace of the working constraints
-    - F.P:   the hessian of the problem
-    - F.ZPZ: equal to F.Z'*F.P*F.P, i.e. the reduced hessian
-
     The Data structure also keeps matrices of the constraints not in the working set (A_ignored and b_ignored)
     stored in a continuous manner. This allows efficient use of BLAS.
     """
@@ -27,7 +21,7 @@ mutable struct Data{T}
     n::Int  # length(x)
     m::Int  # Number of constraints
 
-    P::SparseMatrixCSC{T}
+    P
     q::Vector{T}
     A::SparseMatrixCSC{T}
     b::Vector{T}
@@ -59,18 +53,7 @@ mutable struct Data{T}
     eigen_steps::Int
     timings::DataFrame
 
-    #=
-    # Timings
-    t_global_trs::Vector{T}
-    t_local_trs::Vector{T}
-    t_gradient::Vector{T}
-    t_add_constraint::Vector{T}
-    t_move::Vector{T}
-    t_remove_constraint::T
-    t_kkt::Vector{T}
-    =#
-
-    function Data(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T},
+    function Data(P, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T},
         r::T, x::Vector{T}; kwargs...) where T
 
         m, n = size(A)
@@ -83,19 +66,19 @@ mutable struct Data{T}
         Data(P, q, A, b, r, x, working_set, ignored_set; kwargs...)
     end
 
-    function Data(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T, x::Vector{T},
+    function Data(P, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T, x::Vector{T},
         working_set::Vector{Int}, ignored_set::Vector{Int};
         verbosity=1, printing_interval=50, tolerance=1e-11) where T
 
         m, n = size(A)
         λ = zeros(T, m);
-        new{T}(x, zeros(T, 0),
+        new{T}(x, zeros(T, length(x)),
             n, m,
             P, q, A, b, r,
             working_set, ignored_set,
             false, 0,
             zeros(T, 0),
-            eigs(P, nev=1, which=:LR, ritzvec=false)[1][1],
+            0.0, # eigs(P, nev=1, which=:LR, ritzvec=false)[1][1],
             nothing, nothing,
             T(tolerance), verbosity, printing_interval,  # Options
             0, λ, 0, NaN, '-', 0, 0,  # Logging
@@ -109,26 +92,7 @@ mutable struct Data{T}
 end
 
 function fact(data)
-    if data.ps == nothing
-        data.ps = MKLPardisoSolver()
-        set_matrixtype!(data.ps, Pardiso.REAL_SYM_INDEF) # real and symmetric
-        pardisoinit(data.ps) # Set default options for the matrix type we have chosen
-        # set_nprocs!(data.ps, 4) # Number of threads used by MKL pardiso. Warning: BLAS is recommened to be single threaded.
-        set_iparm!(data.ps, 1, 1) # Enable parameters
-        # set_iparm!(data.ps, 25, 1) # Parallelize forward/backward solve
-        set_iparm!(data.ps, 11, 1) # Scaling
-        set_iparm!(data.ps, 13, 1) # weighted matchings
-        # set_iparm!(data.ps, 8, 6) # Max number of iterative refinement steps. MAYBE this is too big?
-    end
-    A_working = SparseMatrixCSC(data.A[data.working_set, :])
-    if length(A_working) > 0
-        M = SparseMatrixCSC([[I A_working']; [A_working -1e-90*I]]) # Pardiso all of the diagonal stored
-    else
-        M = SparseMatrixCSC(1.0*I, data.n, data.n)
-    end
-    data.F = get_matrix(data.ps, M, :N)
-    set_phase!(data.ps, Pardiso.ANALYSIS_NUM_FACT) # Analysis, numerical factorization
-    pardiso(data.ps, zeros(size(M, 1)), data.F, zeros(size(M, 1)))
+    nothing
 end
 
 function remove_constraint!(data, idx::Int)
@@ -145,7 +109,7 @@ function add_constraint!(data, idx::Int)
     fact(data)
 end
 
-function solve_boundary(P::SparseMatrixCSC{T}, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T,
+function solve_boundary(P, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T,
     x::Vector{T}; max_iter=Inf, kwargs...) where T
     data = Data(P, q, A, b, r, x; kwargs...)
     fact(data)
@@ -183,12 +147,13 @@ function _iterate!(data::Data{T}) where{T}
     t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
     t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
 
-    @assert maximum(data.A*data.x - data.b) <= 1e-10
+    # @assert maximum(data.A*data.x - data.b) <= 1e-8
     if data.removal_idx > 0
         t_remove = @elapsed remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
     end
 
+    # Is x0 always zero in our case?
     t_proj = @elapsed data.x0 = data.x - project(data, data.x)
     if sqrt(data.r^2 - norm(data.x0)^2) <= 1e-10
         @warn "LICQ failed. Terminating"
@@ -198,24 +163,10 @@ function _iterate!(data::Data{T}) where{T}
 
     t_grad = @elapsed new_constraint = gradient_steps(data, 5)
 
-    @assert maximum(data.A*data.x - data.b) <= 1e-10
+    # @assert maximum(data.A*data.x - data.b) <= 1e-8
     if isnan(new_constraint)
         projection! = x -> project!(data, x)
         t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, projection!, data.x, data.eig_max, tol=1e-12)
-        #=
-        Profile.init(n = 10^8, delay = 1e-5)
-        Profile.clear()
-        Profile.@profile trs_boundary(data.P, data.q, data.r, projection!, data.x, data.eig_max, tol=1e-12)
-        ProfileView.view()		
-        println("Press enter to continue...")		
-        readline(stdin)	
-        =#
-        # @show norm((data.A*(Xmin .- data.x0))[data.working_set])
-        #=
-        q_ = data.F.Z'*(data.q + data.P*data.x0) # Reduced q 
-        Ymin, info_ = trs_robust(Symmetric(data.F.ZPZ), q_, r_, tol=1e-11)
-        @show info.λ - info_.λ
-        =#
         t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
             t_trs_l = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, x -> x .= project(data, x), data.x, data.eig_max, tol=1e-12, compute_local=true)
@@ -243,42 +194,21 @@ function _iterate!(data::Data{T}) where{T}
         show(stdout, "text/plain", [labels sums]); println()
         @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
     end
-    @assert maximum(data.A*data.x - data.b) <= 1e-10
+    # @assert maximum(data.A*data.x - data.b) <= 1e-8
     data.iteration += 1
 end
 
 function check_kkt!(data)
     g = grad(data, data.x)
-    λ = kkt(data, -g - data.μ*data.x)
-    # show(stdout, "text/plain", [x_ data.x])
-    # @show norm(data.x - x_)
-    # @show norm(x_), data.r
-    #=
-    multipliers = [data.A[data.working_set, :]' data.x]\(-g)
-    @show multipliers[end] - data.μ
-    show(stdout, "text/plain", [multipliers[1:end-1] λ multipliers[1:end-1]-λ]); println()
-    @assert false
-    F = qr(data.F.Z'*data.x)
-    R = view(data.F.QR.R, 1:data.F.QR.m+1, 1:data.F.QR.m+1)
-    R[1:end-1, end] = data.F.QR.Q1'*data.x
-    R[end, end] = F.factors[1, 1]
-
-    g = grad(data, data.x)
-    Qg = -[data.F.QR.Q1'*g; (F.Q'*(data.F.QR.Q2'*g))[1]]
-    multipliers = UpperTriangular(R)\Qg
-    =#
-
-    data.λ .= 0
-    data.λ[data.working_set] .= λ
+    data.λ = kkt(data, -g - data.μ*data.x)
 
     data.residual = norm(g + data.A'*data.λ + data.x*data.μ)
-    # data.residual = norm(Qg[length(λ)+1:end])
     if all(data.λ .>= -max(1e-8, data.residual))
         data.done = true
         data.removal_idx = 0
     else
         # @show minimum(λ)
-        data.removal_idx = argmin(λ)
+        data.removal_idx = argmin(data.λ[data.working_set])
     end
 
     return data.removal_idx
@@ -347,11 +277,10 @@ function gradient_steps(data, max_iter=1e6)
 end
 
 function curvature_step(data, y_global)
-    # Find tangent eigenvector v_min which should correspond to a negative eigenvalue
+    # ToDo: Change to QR-based projection for more numerical stability?
     project!(x) = axpy!(-dot(x, data.y)/dot(data.y, data.y), data.y, x)
     l = -(data.y'*(data.F.ZPZ*data.y)+data.Zq'*data.y)/dot(data.y, data.y) - 100 # Approximate Lagrange multiplier
     function custom_mul!(y::AbstractVector, x::AbstractVector)
-        # print(dot(x, data.y), " ")
         project!(x)
         mul!(y, data.F.ZPZ, x)
         axpy!(l, x, y)
@@ -530,27 +459,40 @@ function grad(data::Data{T}, x) where{T}
 end
 
 function project(data, x)
-    z = [x; zeros(length(data.working_set))]
-    y = similar(z)
-    set_phase!(data.ps, 33) # Solve, iterative refinement
-    pardiso(data.ps, y, data.F, z)
-    return y[1:data.n]
+    return project!(data, copy(x))
 end
 
-function project!(data::Data{T}, x::AbstractVector{T}) where {T}
-    z = [x; zeros(T, length(data.working_set))]
-    y = similar(z)
-    set_phase!(data.ps, 33) # Solve, iterative refinement
-    pardiso(data.ps, y, data.F, z)
-    copyto!(x, view(y, 1:data.n))
+function project!(data, x)
+    @inbounds for i = 1:length(data.working_set)
+        idx = data.working_set[i]
+        if idx <= data.n
+            x[idx] = 0
+        end
+    end
+
+    if in(data.n + 1, data.working_set) # if the sum(x) = \gamma constraint is active
+        n = length(data.ignored_set)
+        x[data.ignored_set] .-= mean(x[data.ignored_set])
+    end
+    return x
 end
 
 function kkt(data, g)
-    z = [g; zeros(length(data.working_set))]
-    y = similar(z)
-    set_phase!(data.ps, 33) # Solve, iterative refinement
-    pardiso(data.ps, y, data.F, z)
-    return y[data.n+1:end]
+    λ = zeros(data.n + 1)
+    if in(data.n + 1, data.working_set) # if the sum(x) = \gamma constraint is active
+        λ[end] = mean(g[data.ignored_set])
+    else
+        λ[end] = 0
+    end
+    @inbounds for i = 1:length(data.working_set)
+        idx = data.working_set[i]
+        if idx <= data.n
+            λ[idx] = -g[idx] + λ[end]
+        end
+    end
+    # show(stdout, "text/plain", [λ[1:data.n] g .+ λ[end]])
+    # @show g - λ[1:data.n] .+ λ[end]
+    return λ
 end
 
 #=
