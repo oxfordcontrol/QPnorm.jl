@@ -68,6 +68,16 @@ end
 
 function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, v0=zeros((0,)), kwargs...) where T
     n = length(q)
+    if norm(q) <= 1e-10
+        if n > 20
+            l, v = eigs(P, which=:SR, nev=1, tol=1e-11)
+        else
+            l, v = eigen(P)
+        end
+        v = v[:, 1]/norm(v)*r
+        return [v -v], TRS.TRSinfo(true, 0, 0, [l[1]; l[1]])
+    end
+
     if n < 15
         return trs_boundary_small(P, q, r; kwargs...)
     else
