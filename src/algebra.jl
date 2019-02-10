@@ -74,7 +74,7 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, v0
         else
             l, v = eigen(P)
         end
-        v = v[:, 1]/norm(v)*r
+        v = v[:, 1]/norm(v[:, 1])*r
         return [v -v], TRS.TRSinfo(true, 0, 0, [l[1]; l[1]])
     end
 
