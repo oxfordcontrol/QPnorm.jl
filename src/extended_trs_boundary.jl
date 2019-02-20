@@ -22,12 +22,15 @@ mutable struct Data{T}
     m::Int  # Number of constraints
 
     P
+    P_::Matrix{T}
+    P__::Matrix{T}
     q::Vector{T}
     A::SparseMatrixCSC{T}
     b::Vector{T}
     r::T
     working_set::Vector{Int}
     ignored_set::Vector{Int}
+    active_variables::Vector{Int}
 
     done::Bool
     removal_idx::Int
@@ -57,7 +60,7 @@ mutable struct Data{T}
         r::T, x::Vector{T}; kwargs...) where T
 
         m, n = size(A)
-        working_set = findall((A*x - b)[:] .>= 1)
+        working_set = findall((A*x - b)[:] .>= -1e-10)
         if length(working_set) >= n
             working_set = working_set[1:n-1]
         end
@@ -71,17 +74,26 @@ mutable struct Data{T}
         verbosity=1, printing_interval=50, tolerance=1e-11) where T
 
         m, n = size(A)
+        active_variables = Int[]
+        n_ = Int(n/2)
+        for i = 1:n_
+            if !in(i, working_set) || !in(i + n_, working_set)
+                append!(active_variables, i)
+            end
+        end
+
         λ = zeros(T, m);
         new{T}(x, zeros(T, length(x)),
             n, m,
-            P, q, A, b, r,
-            working_set, ignored_set,
+            nothing, P, zeros(size(P)), q, A, b, r,
+            working_set, ignored_set, active_variables,
             false, 0,
             zeros(T, 0),
             0.0, # eigs(P, nev=1, which=:LR, ritzvec=false)[1][1],
             nothing, nothing,
             T(tolerance), verbosity, printing_interval,  # Options
             0, λ, 0, NaN, '-', 0, 0,  # Logging
+            # Timings
             DataFrame(projection=zeros(T, 0), gradient_steps=zeros(T, 0),
                 trs=zeros(T, 0), trs_local=zeros(T, 0),
                 move_to_optimizer=zeros(T, 0), move_to_local_optimizer=zeros(T, 0),
@@ -91,28 +103,83 @@ mutable struct Data{T}
     end
 end
 
-function fact(data)
-    nothing
+function update_function_handle!(data, P)
+    n = Int(data.n/2)
+    k = length(data.active_variables)
+    w1 = zeros(k)
+    w2 = zeros(k)
+    indices = copy(data.active_variables)
+    function mul_p(y, x)
+        w1 = x[indices] - x[indices .+ n]
+        y1 = view(y, 1:n); y2 = view(y, n+1:2*n)
+        mul!(w2, P, w1)
+        @. y1 = 0.0
+        y1[indices] = w2
+        @. y2 = -y1
+        return y
+    end
+    data.P = LinearMap(mul_p, data.n; ismutating=true, issymmetric=true)
 end
 
 function remove_constraint!(data, idx::Int)
     constraint_idx = data.working_set[idx]
     prepend!(data.ignored_set, constraint_idx)
     deleteat!(data.working_set, idx)
-    fact(data)
+
+    n = Int(data.n/2)
+    new_active_variable = NaN
+    if constraint_idx <= data.n
+        if !in(constraint_idx, data.active_variables) && !in(constraint_idx - n, data.active_variables)
+            new_active_variable = mod(constraint_idx, n)
+            if new_active_variable == 0
+                new_active_variable = n
+            end
+        end 
+    end
+
+    if !isnan(new_active_variable)
+        append!(data.active_variables, new_active_variable)
+        l = length(data.active_variables)
+        data.P__[1:l, l] = data.P_[data.active_variables, data.active_variables[end]]
+        update_function_handle!(data, Symmetric(view(data.P__, 1:l, 1:l)))
+    end
 end
 
 function add_constraint!(data, idx::Int)
     constraint_idx = data.ignored_set[idx]
     deleteat!(data.ignored_set, idx)
     append!(data.working_set, constraint_idx)
-    fact(data)
+
+    n = Int(data.n/2)
+    idx_ = mod(constraint_idx, n)
+    if idx_ == 0
+        idx_ = n
+    end
+
+    deletion_idx = NaN
+    if in(idx_, data.working_set) && in(idx_ + n, data.working_set) && in(idx_, data.active_variables)
+        deletion_idx = findfirst(data.active_variables .== idx_)
+    end 
+
+    if false # !isnan(deletion_idx)
+        deleteat!(data.active_variables, deletion_idx)
+        l = length(data.active_variables)
+        @inbounds for i = 1:n
+            for j = deletion_idx:l
+                data.P__[i, j] = data.P__[i, j + 1]
+            end
+        end
+        update_function_handle!(data, Symmetric(view(data.P__, 1:l, 1:l)))
+    end
 end
 
 function solve_boundary(P, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r::T,
     x::Vector{T}; max_iter=Inf, kwargs...) where T
     data = Data(P, q, A, b, r, x; kwargs...)
-    fact(data)
+    data.ps = false
+    l = length(data.active_variables)
+    data.P__[1:l, 1:l] = data.P_[data.active_variables, data.active_variables]
+    update_function_handle!(data, Symmetric(view(data.P__, 1:l, 1:l)))
 
     if data.verbosity > 0
         print_header(data)
@@ -127,6 +194,7 @@ function solve_boundary(P, q::Vector{T}, A::SparseMatrixCSC{T}, b::Vector{T}, r:
             (mod(data.iteration, data.printing_interval) == 0 || data.done) && print_info(data)
         end
     end
+    @show length(data.active_variables)
     return data.x
 end
 
@@ -134,9 +202,9 @@ function iterate!(data::Data{T}) where{T}
     _iterate!(data)
     #=
     Profile.clear()		
-    Profile.@profile for i = 1:100; _iterate!(data); end
+    Profile.@profile for i = 1:10; _iterate!(data); end
     Profile.clear()		
-    Profile.@profile for i = 1:100; _iterate!(data); end
+    Profile.@profile for i = 1:10; _iterate!(data); end
     ProfileView.view()		
     println("Press enter to continue...")		
     readline(stdin)	
@@ -152,6 +220,8 @@ function _iterate!(data::Data{T}) where{T}
         t_remove = @elapsed remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
     end
+    # @show length(sort(data.active_variables))
+    # @show length(sort(mod.(data.ignored_set, Int(data.n/2))))
 
     # Is x0 always zero in our case?
     t_proj = @elapsed data.x0 = data.x - project(data, data.x)
@@ -182,12 +252,17 @@ function _iterate!(data::Data{T}) where{T}
     if !isnan(new_constraint)
         t_add = @elapsed add_constraint!(data, new_constraint)
     end
+    if data.n <= length(data.working_set) + 1
+        projection! = x -> project!(data, x)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.P, data.q, data.r, projection!, data.x, data.eig_max, tol=1e-12)
+        data.μ = info.λ[1]
+    end
     if isnan(new_constraint) || data.n - length(data.working_set) <= 1
         t_kkt = @elapsed data.removal_idx = check_kkt!(data)
     end
     
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
-    if data.done
+    if data.done && false
         data.timings |> CSV.write(string("timings.csv"))
         sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
         labels =  names(data.timings)
@@ -199,7 +274,9 @@ function _iterate!(data::Data{T}) where{T}
 end
 
 function check_kkt!(data)
-    g = grad(data, data.x)
+    # g = grad(data, data.x)
+    Px_ = data.P_*(data.x[1:Int(data.n/2)] - data.x[Int(data.n/2)+1:end])
+    g = [Px_; -Px_] + data.q
     data.λ = kkt(data, -g - data.μ*data.x)
 
     data.residual = norm(g + data.A'*data.λ + data.x*data.μ)
@@ -207,7 +284,6 @@ function check_kkt!(data)
         data.done = true
         data.removal_idx = 0
     else
-        # @show minimum(λ)
         data.removal_idx = argmin(data.λ[data.working_set])
     end
 
@@ -237,7 +313,7 @@ function move_towards_optimizers!(data, X, info)
     is_minimizer = false
     if isnan(new_constraint)
         if how_many > 1 || norm(data.x - X[:, 1])/data.r <= 1e-5
-            @show norm(data.x - X[:, 1])
+            # @show norm(data.x - X[:, 1])
             if how_many == 1 || norm(data.x - X[:, 1]) <= norm(data.x - X[:, 2])
                 data.μ = info.λ[1]
             else
@@ -411,9 +487,9 @@ function minimize_2d(data, d1, d2)
     q2 = dot(d2, data.q) + dot(Pd2, z)
     P = [P11 P12; P12 P22]; q = [q1; q2]
 
-    b = (data.b - data.A*z)[data.ignored_set]
-    a1 = (data.A*d1)[data.ignored_set]
-    a2 = (data.A*d2)[data.ignored_set]
+    b = [z; data.b[end] - sum(z)][data.ignored_set]
+    a1 = [-d1; sum(d1)][data.ignored_set]
+    a2 = [-d2; sum(d2)][data.ignored_set]
 
     # Discard perfectly correlated constraints. Be careful with this, especially on debugging.
     idx = a1.^2 + a2.^2 .<= 1e-16

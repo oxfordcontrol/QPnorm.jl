@@ -1,5 +1,4 @@
 using Arpack
-using TRS
 
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
