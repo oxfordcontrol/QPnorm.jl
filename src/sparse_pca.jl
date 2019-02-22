@@ -304,7 +304,7 @@ function gradient_steps(data, max_iter=1e6)
     while isnan(new_constraint) && k < max_iter
         d1 = data.x_nonzero - data.x0;
         d1 ./= norm(d1)
-        d2 = project_full(data, grad(data, data.x_nonzero))
+        d2 = project_full(data, grad(data, data.x_nonzero))[1]
         if norm(d2) <= 1e-6
             break
         end
@@ -322,31 +322,31 @@ function gradient_steps(data, max_iter=1e6)
     return new_constraint
 end
 
-function curvature_step(data, x_global, info)
-    l = -dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/1.0 - 100 # Approximate Lagrange multiplier
+function curvature_step(data, x_global::Vector{T}, info) where T
+    data.μ = project_full(data, grad(data, data.x_nonzero))[3] # Approximate Lagrange Multiplier
+    shift = T(100) # Shift the eigenproblem so that it is easier to solve
     function custom_mul!(y::AbstractVector, x::AbstractVector)
-        x .= project_full(data, x)
+        x .= project_full(data, x)[1]
         mul!(y, data.H_nonzero.H, x)
-        axpy!(l, x, y)
-        y .= project_full(data, y)
+        axpy!(data.μ - shift, x, y)
+        y .= project_full(data, y)[1]
     end
     L = LinearMap{Float64}(custom_mul!, length(x_global); ismutating=true, issymmetric=true)
-    λ_min, v_min, _ = eigs(L, nev=1, which=:SR, v0=project_full(data, randn(length(x_global))))
+    λ_min, v_min, _ = eigs(L, nev=1, which=:SR, v0=project_full(data, randn(length(x_global)))[1])
     λ_min = λ_min[1]; v_min = v_min[:, 1]
-    λ_min += 100
+    λ_min += shift
 
-    if norm(v_min - project_full(data, v_min)) >= 1e-6
+    if norm(v_min - project_full(data, v_min)[1]) >= 1e-6
         @warn "Search for negative curvature failed; we assume that we are in a local minimum"
         return NaN
     end
     if λ_min >= 0
         @warn "We ended up in an unexpected TRS local minimum. Perhaps the problem is badly scaled." λ_min
-        data.μ = λ_min
         return NaN
     end
     d1 = project!(data, v_min)
     d2 = x_global - data.x_nonzero
-    D = qr([d1 d2]).Q
+    D = qr([d1 d2]).Q*Matrix(I, length(d1), 2)
     new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
 
     @assert !isnan(new_constraint)
@@ -544,7 +544,7 @@ function project_full(data, x)
     μ = -l[end]
     x_proj = x + data.L*λ + y*μ
     # @show norm(data.L'*x_proj)
-    return x_proj
+    return x_proj, λ, μ
 end
 
 function iterate!(data::Data{T}) where{T}
