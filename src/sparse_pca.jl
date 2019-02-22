@@ -65,6 +65,10 @@ mutable struct Data{T, Tf}
 
         @assert norm(Y'*y_init) < 1e-9 "Starting vector not perpendicular to previous principal vectors"
         @assert norm(y_init) <= gamma "Starting vector violates one-norm constraint"
+        if norm(y_init) - 1 <= -1e-9
+            # Scale y_init so that either the one-norm or two norm constraint is active
+            y_init /= max(norm(y_init, 1)/gamma, norm(y_init, 2)) 
+        end
 
         x = [max.(y_init, 0, ); -min.(y_init, 0)]
 
@@ -155,7 +159,7 @@ function _iterate!(data::Data{T}) where{T}
     data.R[1:end-1, 1:end-1] = data.F.R
 
     if norm(data.x_nonzero) - 1 <= -1e-9
-        @assert false
+        @assert data.gamma_active
         direction = project!(data, -grad(data, data.x_nonzero)) # Projected gradient
         stepsizes = 1.0./min.(direction, 0)
         idx = argmin(stepsizes)
@@ -210,7 +214,7 @@ function _iterate!(data::Data{T}) where{T}
     
     # Updating, Saving & Printing of timings 
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
-    if data.done && false
+    if data.done
         data.timings |> CSV.write(string("timings.csv"))
         sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
         labels =  names(data.timings)
