@@ -4,20 +4,18 @@ module eTRS
 
 using LinearAlgebra, SparseArrays
 using Polynomials
-using GeneralQP
-# kinclude("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/GeneralQP.jl/src/GeneralQP.jl")
-using Main.eTRS.GeneralQP
+include("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/TRS.jl/src/TRS.jl")
+using Main.eTRS.TRS
 using SparseArrays
 using BenchmarkTools
 # using Profile, ProfileView
-using Pardiso
 using Statistics
 using DataFrames, CSV
 
 include("algebra.jl")
-include("extended_trs_boundary.jl")
+include("sparse_pca.jl")
+include("utils.jl")
 include("printing.jl")
-include("extended_trs.jl")
-export solve
+export sparce_pca, get_initial_guess, polish!
 
 end

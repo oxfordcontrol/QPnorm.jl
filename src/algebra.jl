@@ -1,4 +1,5 @@
 using Arpack
+import Base.getindex
 
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
@@ -98,4 +99,102 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, v0
             end
         end
     end
+end
+
+mutable struct FlexibleHessian{T, Tf}
+    S::Tf
+    H::Symmetric{T, SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int},UnitRange{Int}}, false}}
+    data::Matrix{T}  # That's where P is viewing into
+    indices::Vector{Int}
+
+    function FlexibleHessian(S::Tf, indices::Vector{Int}) where {Tf}
+        m = length(indices)
+        T = typeof(getindex(S, 1, 1))
+        data = zeros(T, 2*m, 2*m)
+        for j in 1:m, i = 1:j
+            data[i, j] = -getindex_cyclic(S, indices[i], indices[j])
+        end
+        new{T, Tf}(S, Symmetric(view(data, 1:m, 1:m)), data, copy(indices))
+    end
+end
+
+function add_column!(FP::FlexibleHessian{T, Tf}, idx::Int) where {T, Tf}
+    m = length(FP.indices)
+
+    # Expand FP.data if it is already full
+    if size(FP.data, 1) == m
+        new_data = zeros(T, 2*m, 2*m)
+        new_data[1:m, 1:m] = FP.data
+        FP.data = new_data
+    end
+
+    append!(FP.indices, idx)
+    for i in 1:m+1
+        FP.data[i, m+1] = -getindex_cyclic(FP.S, FP.indices[i], idx)
+    end
+    FP.H = Symmetric(view(FP.data, 1:m+1, 1:m+1))
+    # W = [FP.P_full -FP.P_full; -FP.P_full FP.P_full]
+    # show(stdout, "text/plain", W[FP.indices, FP.indices]); println()
+    # show(stdout, "text/plain", FP.P); println()
+end
+
+function remove_column!(FP::FlexibleHessian{T, Tf}, position::Int) where {T, Tf}
+    m = length(FP.indices)
+    @inbounds for j = position:m-1, i = 1:position-1
+        FP.data[i, j] = FP.data[i, j+1]
+    end
+    @inbounds for j = position:m-1, i = position:j
+        FP.data[i, j] = FP.data[i+1, j+1]
+    end
+    deleteat!(FP.indices, position)
+    FP.H = Symmetric(view(FP.data, 1:m-1, 1:m-1))
+end
+
+struct CovarianceMatrix{T}
+    D::T # An kxn matrix-like object containing k n-dimensional observations with zero mean
+         # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
+         # and (normal/transposed) multiplication (with *)
+
+    function CovarianceMatrix(D::T) where {T}
+        @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
+        new{T}(D)
+    end
+end
+
+function getindex_cyclic(A, i::Int, j::Int)
+    n = size(A, 1)
+    if i > size(A, 1) && j > size(A, 1)
+        return getindex(A, i - n, j - n)
+    elseif i > size(A, 1)
+        return -getindex(A, i - n, j)
+    elseif j > size(A, 1)
+        return -getindex(A, i, j - n)
+    else
+        return getindex(A, i, j)
+    end
+end
+
+function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
+    return dot(S.D[:, i], S.D[:, j])
+end
+
+function indexed_mul(y::Vector{T}, S::CovarianceMatrix{T}, x::Vector{T}, idx::Vector{Int}) where {T}
+    n = Int(length(x)/2)
+    y = D'*(D*(x[1:n] - x[n+1:end]))
+    return [y; -y]
+end
+
+function indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) where {T}
+    n = size(S, 1)
+    y = zeros(n)
+    for i = 1:length(indices)
+        idx = indices[i]
+        coefficient = x[i]
+        if indices[i] > n
+            idx -= n
+            coefficient = -coefficient
+        end
+        axpy!(coefficient, view(S, :, idx), y)
+    end
+    return [y; -y]
 end
