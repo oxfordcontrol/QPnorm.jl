@@ -6,11 +6,11 @@ using Main.eTRS
 using Random
 
 rng = MersenneTwister(123)
-dim = 3000
-points = 3000
-X = rand(rng, points, dim);
+dim = 10000
+points = 300
+X = sprand(rng, points, dim, 0.7);
 X .-= mean(X, dims=1)
-S = Symmetric(X'*X)
+S = eTRS.CovarianceMatrix(X)# Symmetric(X'*X)
 
 l = 3 # number of previous vectors
 Y = randn(rng, dim, l); F = qr(Y); Y = F.Q*Matrix(I, l, l); # Previous vector matrix is orthonormal
