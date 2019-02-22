@@ -22,7 +22,9 @@ end
 
 function get_initial_guess(S, nnz::Int; Y::Matrix{T}=zeros(0, 0)) where {T}
     n = size(S, 1)
-    S = Symmetric(S)
+    if isa(S, Matrix{T})
+        S = Symmetric(S)
+    end
 
     if length(Y) == 0
         v_max = eigs(S, which=:LR, nev=1)[2][:]

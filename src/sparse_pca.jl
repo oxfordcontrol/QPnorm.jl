@@ -228,7 +228,7 @@ function check_kkt!(data)
     data.ν = l[end]
     # println("residual grad norm in nonzeros: ", norm(residual_grad + data.L*l)) # This should be ~zero
 
-    gradient = -indexed_mul(data.S, data.x_nonzero, data.nonzero_indices)
+    gradient = -indexed_mul(data.S, data.x, data.nonzero_indices)
     # println("error in gradient calculation:", norm([data.S -data.S; -data.S data.S]*data.x - gradient)) # This should be ~zero
     residual_grad = gradient + data.μ*data.x .+ data.ν + data.W*data.κ
     # @show data.κ

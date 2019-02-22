@@ -1,5 +1,5 @@
 using Arpack
-import Base.getindex
+import Base.getindex, Base.size
 
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
@@ -161,6 +161,14 @@ struct CovarianceMatrix{T}
     end
 end
 
+function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector) where {T}
+    return S.D'*(S.D*x)
+end
+
+function size(S::CovarianceMatrix{T}, idx::Int) where {T}
+    return size(S.D, 2)
+end
+
 function getindex_cyclic(A, i::Int, j::Int)
     n = size(A, 1)
     if i > size(A, 1) && j > size(A, 1)
@@ -178,9 +186,9 @@ function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
     return dot(S.D[:, i], S.D[:, j])
 end
 
-function indexed_mul(y::Vector{T}, S::CovarianceMatrix{T}, x::Vector{T}, idx::Vector{Int}) where {T}
+function indexed_mul(S::CovarianceMatrix{Tf}, x::Vector{T}, idx::Vector{Int}) where {Tf, T}
     n = Int(length(x)/2)
-    y = D'*(D*(x[1:n] - x[n+1:end]))
+    y = S.D'*(S.D*(x[1:n] - x[n+1:end]))
     return [y; -y]
 end
 
@@ -189,8 +197,8 @@ function indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) w
     y = zeros(n)
     for i = 1:length(indices)
         idx = indices[i]
-        coefficient = x[i]
-        if indices[i] > n
+        coefficient = x[idx]
+        if idx > n
             idx -= n
             coefficient = -coefficient
         end

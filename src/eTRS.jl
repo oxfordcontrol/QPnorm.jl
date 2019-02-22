@@ -16,6 +16,6 @@ include("algebra.jl")
 include("sparse_pca.jl")
 include("utils.jl")
 include("printing.jl")
-export sparce_pca, get_initial_guess, polish!
+export sparce_pca, get_initial_guess, polish!, CovarianceMatrix#, Base.size
 
 end
