@@ -186,28 +186,19 @@ function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
     return dot(S.D[:, i], S.D[:, j])
 end
 
-function indexed_mul(S::CovarianceMatrix{Tf}, x::Vector{T}, idx::Vector{Int}) where {Tf, T}
+function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
     n = Int(length(x)/2)
-    y = S.D'*_indexed_mul(S.D, x, idx)
+    y = S.D'*_sparse_mul(S.D, x)
     return [y; -y]
 end
 
-function indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) where {T}
-    y = _indexed_mul(S, x, indices)
+function sparse_mul(S::AbstractMatrix{T}, x::Vector{T}) where {T}
+    y = _sparse_mul(S, x)
     return [y; -y]
 end
 
-function _indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) where {T}
+function _sparse_mul(S::AbstractMatrix{T}, x::Vector{T}) where {T}
     n = size(S, 2)
-    y = zeros(size(S, 1))
-    for i = 1:length(indices)
-        idx = indices[i]
-        coefficient = x[idx]
-        if idx > n
-            idx -= n
-            coefficient = -coefficient
-        end
-        axpy!(coefficient, view(S, :, idx), y)
-    end
-    return y
+    sparse_diff = sparse(x[1:n] - x[n+1:end])
+    return S*sparse_diff
 end

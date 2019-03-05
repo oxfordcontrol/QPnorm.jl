@@ -62,6 +62,7 @@ mutable struct Data{T, Tf}
     function Data(S::Tf, H::FlexibleHessian{T, Tf}, gamma::T, y_init::Vector{T}; Y::Matrix{T}=zeros(T, 0, 0),
         verbosity=1, printing_interval=50, tolerance=1e-11, kwargs...) where {T, Tf}
 
+        @assert !isa(S, Symmetric) "Do not pass the covariance matrix in Symmetric type."
         nonzero_indices = copy(H.indices)
         zero_indices = setdiff(1:2*length(y_init), nonzero_indices)
         if length(Y) == 0
@@ -208,7 +209,8 @@ function iterate!(data::Data{T}) where{T}
         end
     end
     # @show norm(data.x[data.nonzero_indices] - data.x_nonzero)
-    @. data.x[data.nonzero_indices] = data.x_nonzero
+    data.x .= 0
+    data.x[data.nonzero_indices] .= data.x_nonzero
 
     if !isnan(new_constraint)
         t_add = @elapsed add_constraint!(data, new_constraint)
@@ -236,7 +238,7 @@ function check_kkt!(data)
     data.ν = l[end]
     # println("residual grad norm in nonzeros: ", norm(residual_grad + data.L*l)) # This should be ~zero
 
-    gradient = -indexed_mul(data.S, data.x, data.nonzero_indices)
+    gradient = -sparse_mul(data.S, data.x)
     # println("error in gradient calculation:", norm([data.S -data.S; -data.S data.S]*data.x - gradient)) # This should be ~zero
     residual_grad = gradient + data.μ*data.x .+ data.ν + data.W*data.κ
     # @show data.κ

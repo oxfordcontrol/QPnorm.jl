@@ -37,7 +37,7 @@ points = 5000
 X = randn(rng, points, dim);
 X .-= mean(X, dims=1)
 # S = eTRS.CovarianceMatrix(X)
-S = Symmetric(X'*X)
+S = X'*X
 
 l = 2 # number of previous vectors
 Y = randn(rng, dim, l); F = qr(Y); Y = F.Q*Matrix(I, l, l); # Previous vector matrix is orthonormal
