@@ -6,24 +6,12 @@ using Main.eTRS
 using Random
 
 rng = MersenneTwister(123)
-dim = 10000
+dim = 15000
 points = 300
-X = sprand(rng, points, dim, 0.7);
+X = randn(rng, points, dim);
 X .-= mean(X, dims=1)
-S = eTRS.CovarianceMatrix(X)# Symmetric(X'*X)
-
-l = 3 # number of previous vectors
-Y = randn(rng, dim, l); F = qr(Y); Y = F.Q*Matrix(I, l, l); # Previous vector matrix is orthonormal
-x_init, gamma = eTRS.get_initial_guess(S, 50; Y=Y)
-
-initial_nonzeros = sum(abs.(x_init) .> 1e-7)
-@show initial_nonzeros
-x = eTRS.sparse_pca(S, gamma, x_init; Y=Y, verbosity=1, printing_interval=200, max_iter=10000);
-nonzeros = sum(abs.(x) .> 1e-7)
-@show nonzeros
-x_thresholded, gamma = eTRS.get_initial_guess(S, nonzeros; Y=Y)
-eTRS.polish!(x, S, Y=Y)
-@show dot(x, S*x) dot(x_thresholded, S*x_thresholded)
+S = eTRS.CovarianceMatrix(X)
+# S = Symmetric(X'*X)
 
 function pca_ipopt_implicit(D::Matrix{T}, x_init::Vector{T}, γ::T) where {T}
     n = length(x_init)

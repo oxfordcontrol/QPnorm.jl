@@ -6,14 +6,12 @@ using Printf
 
 mutable struct Data{T, Tf}
     """
-    Data structure for the solution of
-        min         ½x'Px + q'x
-        subject to  Ax ≤ b
-                    ‖x‖ = r
+    Data structure for the solution of the sparse pca problem, formulated as:
+        min         ½x'Hx
+        subject to  ‖x‖ = 1
+                    x ≥ 0
+                    sum(x) ≤ γ,
     with an active set algorithm.
-
-    The Data structure also keeps matrices of the constraints not in the working set (A_ignored and b_ignored)
-    stored in a continuous manner. This allows efficient use of BLAS.
     """
     x::Vector{T}  # Variable of the minimization problem
     x_nonzero::Vector{T}  # Nonzero variable
@@ -54,9 +52,18 @@ mutable struct Data{T, Tf}
     eigen_steps::Int
     timings::DataFrame
 
-    function Data(S::Tf, gamma::T, y_init::Vector{T}; Y::Matrix{T}=zeros(T, 0, 0),
+    function Data(S::Tf, gamma::T, y_init::Vector{T}; kwargs...) where {T, Tf}
+        x = [max.(y_init, 0, ); -min.(y_init, 0)]
+        nonzero_indices = findall(x .>= 1e-9)
+        H = FlexibleHessian(S, nonzero_indices)
+        return Data(S, H, gamma, y_init; kwargs...)
+    end
+
+    function Data(S::Tf, H::FlexibleHessian{T, Tf}, gamma::T, y_init::Vector{T}; Y::Matrix{T}=zeros(T, 0, 0),
         verbosity=1, printing_interval=50, tolerance=1e-11, kwargs...) where {T, Tf}
 
+        nonzero_indices = copy(H.indices)
+        zero_indices = setdiff(1:2*length(y_init), nonzero_indices)
         if length(Y) == 0
             Y = zeros(T, size(S, 1), 1)
         else
@@ -64,22 +71,17 @@ mutable struct Data{T, Tf}
         end
 
         @assert norm(Y'*y_init) < 1e-9 "Starting vector not perpendicular to previous principal vectors"
-        @assert norm(y_init) <= gamma "Starting vector violates one-norm constraint"
-        if norm(y_init) - 1 <= -1e-9
+        if norm(y_init, 1) > gamma || norm(y_init) - 1 <= -1e-9
             # Scale y_init so that either the one-norm or two norm constraint is active
             y_init /= max(norm(y_init, 1)/gamma, norm(y_init, 2)) 
         end
-
+        @assert norm(y_init) - 1 <= 1e-9
         x = [max.(y_init, 0, ); -min.(y_init, 0)]
-
-        nonzero_indices = findall(x .>= 1e-9)
-        zero_indices = setdiff(1:length(x), nonzero_indices)
         gamma_active = (sum(x) .>= gamma - 1e-9)
-        FP = FlexibleHessian(S, nonzero_indices)
 
         new{T, Tf}(x, zeros(T, 0), zeros(T, 0),
             S, [Y; -Y], gamma,
-            FP, zeros(T, 0, 0), qr(zeros(T, 0, 0), Val(true)), zeros(T, 0, 0),
+            H, zeros(T, 0, 0), qr(zeros(T, 0, 0), Val(true)), zeros(T, 0, 0),
             nonzero_indices, zero_indices, gamma_active,
             zeros(T, 0, 0),
             zeros(T, 0), zero(T), zero(T), zeros(T, 0), # Multipliers
@@ -116,7 +118,7 @@ function add_constraint!(data, idx::Int)
     end
 end
 
-function sparse_pca(S, gamma::T, y_init::Vector{T}; max_iter=Inf, kwargs...) where T
+function solve_sparse_pca(S, gamma::T, y_init::Vector{T}; max_iter=Inf, kwargs...) where T
     data = Data(S, gamma, y_init; kwargs...)
 
     if data.verbosity > 0
@@ -133,19 +135,37 @@ function sparse_pca(S, gamma::T, y_init::Vector{T}; max_iter=Inf, kwargs...) whe
         end
     end
 
-    # @show minimum(data.x)
-    # @show data.gamma - sum(data.x)
-    # @show norm(data.W'*data.x)
+    data.verbosity > 0 && println("2-norm lagrange multiplier: ", data.μ)
+    data.verbosity > 0 && println("Complementarity: ", dot(data.x[1:size(S, 1)], data.x[size(S, 1)+1:end]))
 
-    println("2-norm lagrange multiplier: ", data.μ)
-    println("Complementarity: ", dot(data.x[1:size(S, 1)], data.x[size(S, 1)+1:end]))
-    return data.x[1:size(S, 1)] - data.x[size(S, 1)+1:end]
+    return data
 end
 
-function _iterate!(data::Data{T}) where{T}
+function iterate_interior!(data::Data{T}) where{T}
+    @assert data.gamma_active # This can be achieved by scaling and it keeps things simple
+    direction = project!(data, -grad(data, data.x_nonzero)) # Projected gradient
+    stepsizes = -data.x_nonzero./min.(direction, 0)
+    stepsizes[stepsizes .< 0] .= Inf
+    idx = argmin(stepsizes)
+    if !isfinite(stepsizes[idx]) || norm(data.x_nonzero + stepsizes[idx]*direction) >= 1
+        stepsizes = roots(Poly(
+            [norm(data.x_nonzero)^2 - 1,
+            2*dot(direction, data.x_nonzero),
+            norm(direction)^2]
+        ))
+        data.x[data.nonzero_indices] = data.x_nonzero + maximum(stepsizes)*direction
+    else
+        data.x[data.nonzero_indices] = data.x_nonzero + stepsizes[idx]*direction
+        add_constraint!(data, idx)
+    end
+end
+
+function iterate!(data::Data{T}) where{T}
     t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
     t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
+    data.iteration += 1
 
+    data.x[data.zero_indices] .= 0
     data.x_nonzero = data.x[data.nonzero_indices]
     # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
 
@@ -158,24 +178,8 @@ function _iterate!(data::Data{T}) where{T}
     data.R = zeros(T, size(data.F.R) .+ 1)
     data.R[1:end-1, 1:end-1] = data.F.R
 
-    if norm(data.x_nonzero) - 1 <= -1e-9
-        @assert data.gamma_active
-        direction = project!(data, -grad(data, data.x_nonzero)) # Projected gradient
-        stepsizes = 1.0./min.(direction, 0)
-        idx = argmin(stepsizes)
-        if !isfinite(stepsizes[idx]) || norm(data.x_nonzero + stepsizes[idx]*direction) >= 1
-            stepsizes = roots(Poly(
-                [norm(data.x_nonzero)^2 - 1,
-                2*dot(direction, data.x_nonzero),
-                norm(direction)^2]
-            ))
-            data.x[data.nonzero_indices] = data.x_nonzero + maximum(stepsizes)*direction
-        else
-            data.x[data.nonzero_indices] = data.x_nonzero + stepsizes[idx]*direction
-            add_constraint!(data, idx)
-        end
-        data.iteration += 1
-        return
+    if norm(data.x_nonzero) <= 1 - 1e-9
+        return iterate_interior!(data)
     end
 
     t_proj = @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
@@ -203,6 +207,7 @@ function _iterate!(data::Data{T}) where{T}
             end
         end
     end
+    # @show norm(data.x[data.nonzero_indices] - data.x_nonzero)
     @. data.x[data.nonzero_indices] = data.x_nonzero
 
     if !isnan(new_constraint)
@@ -214,7 +219,7 @@ function _iterate!(data::Data{T}) where{T}
     
     # Updating, Saving & Printing of timings 
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
-    if data.done
+    if data.done && data.verbosity > 1
         data.timings |> CSV.write(string("timings.csv"))
         sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
         labels =  names(data.timings)
@@ -222,7 +227,6 @@ function _iterate!(data::Data{T}) where{T}
         @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
     end
     # @assert maximum(data.A*data.x - data.b) <= 1e-8
-    data.iteration += 1
 end
 
 function check_kkt!(data)
@@ -257,6 +261,7 @@ function check_kkt!(data)
 end
 
 function move_towards_optimizers!(data, X, info)
+    #= Debugging of the projection accuracy
     for i = 1:size(X, 2) 
         if norm(X[:, i] - (project!(data, X[:, i] - data.x0) + data.x0)) > 1e-11
             @show info
@@ -266,6 +271,7 @@ function move_towards_optimizers!(data, X, info)
         end
         # X[:, i] = project!(data, X[:, i] - data.x0) + data.x0
     end
+    =#
     if isfeasible(data, X[:, 1])
         data.x_nonzero = X[:, 1]
         data.μ = info.λ[1]
@@ -288,7 +294,6 @@ function move_towards_optimizers!(data, X, info)
     is_minimizer = false
     if isnan(new_constraint)
         if how_many > 1 || norm(data.x_nonzero - X[:, 1]) <= 1e-5
-            @assert false
             # @show norm(data.x_nonzero - X[:, 1])
             if how_many == 1 || norm(data.x_nonzero - X[:, 1]) <= norm(data.x_nonzero - X[:, 2])
                 data.μ = info.λ[1]
@@ -368,7 +373,6 @@ end
 function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
     grad = P*[x0; y0] + q
     flip = false
-    # @show angle(x0, y0, grad[1], grad[2])
     if angle(x0, y0, grad[1], grad[2]) < pi
         flip = true
         # Flip y axis, thus obtaining dot(grad, [x0, y0]) > 0
@@ -379,7 +383,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
     end
 
     infeasibility(x, y) = maximum(a1*x + a2*y - b)
-    tol = T(max(1e-11, 1.01*infeasibility(x0, y0)))
+    tol = max(1e-12, 1.2*infeasibility(x0, y0))
 
     new_constraint = NaN
     X, info = trs_boundary_small(P, q, r; compute_local=true)
@@ -399,44 +403,37 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
         end
 
         n = length(b)
-        violating_constraints = Array{Bool}(undef, n)
-        if infeasibility(r*cos(θ), r*sin(θ)) <= tol
+        violating_constraints = Vector{Bool}(undef, n)
+        if !any(find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol))
             x, y = r*cos(θ), r*sin(θ)
         else
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
-            θ_low = T(θ0); θ_high = T(θ)
-            θ = T(θ)
+            θ_low = θ0; θ_high = θ
+            # my_constraints = copy(violating_constraints)
             # Binary Search
-            # f0 = f_2d(x0, y0)
-            f0 = f_2d(x0, y0); x = NaN; y = NaN; idx = NaN
             for i = 1:100
                 find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol)
-                if any(violating_constraints)
+                if any(violating_constraints) # && f_2d(r*cos(θ), r*sin(θ)) <= f_2d(x0, y0)
                     θ_high = θ
-                    idx = findfirst(violating_constraints) # We're lazy here, we could check all of them
-                    x1, y1, x2, y2 = circle_line_intersections(a1[idx], a2[idx], b[idx], r)
-                    if !any(find_violations!(violating_constraints, a1, a2, b, x1, y1, tol))
-                        x, y = x1, y1
-                        new_constraint = idx
-                    end
-                    # if isnan(new_constraint) && !any(find_violations!(violating_constraints, a1, a2, b, x2, y2, tol))
-                    if (f_2d(x2, y2) <= f_2d(x1, y2) || isnan(new_constraint)) && !any(find_violations!(violating_constraints, a1, a2, b, x2, y2, tol))
-                        x, y = x2, y2
-                        new_constraint = idx
-                    end
-                    if !isnan(new_constraint); break; end
+                    new_constraint = findlast(violating_constraints)
                 else
                     θ_low = θ
                 end
                 θ = θ_low + (θ_high - θ_low)/2
             end
-            # @assert !isnan(x) && !isnan(y) && !isnan(new_constraint)
-            if isnan(new_constraint)
-                @warn "No constraint in minimize 2d"
-                # new_constraint = idx
-                x, y = r*cos(θ), r*sin(θ)
-                # new_constraint = findlast(find_violations!(violating_constraints, a1, a2, b, x, y, tol))
-                new_constraint = NaN
+
+            x1, y1, x2, y2 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b[new_constraint], r)
+            if infeasibility(x1, y1) <= tol
+                if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y1)
+                    x, y = x2, y2
+                else
+                    x, y = x1, y1
+                end
+            elseif infeasibility(x2, y2) <= tol
+                x, y = x2, y2
+            else
+                x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
+                @warn "No constraint identified in minimize_2d"
             end
         end
     end
@@ -522,14 +519,21 @@ function project(data, x)
 end
 
 function project!(data, x)
-    l = data.F\x
-    x .-= data.L*l
-    @assert norm(data.L'*x) <= 1e-10 norm(data.L'*x)
+    return project!(x, data.L, data.F)
+end
+
+function project!(x, L::Matrix{T}, F::Factorization{T}) where {T}
+    l = F\x
+    x .-= L*l
+    # @assert norm(data.L'*x) <= 1e-10 norm(data.L'*x)
     return x
 end
 
 function project_full(data, x)
     k = findlast(abs.(diag(data.F.R)) .> 1e-11)
+    if k == nothing
+        return project(data, x), 0, 0
+    end
     y = data.x_nonzero - data.x0 # New column to be "added" in the qr factorization
     Qy = data.F.Q'*y
     Qy1 = view(Qy, 1:k)
@@ -551,6 +555,8 @@ function project_full(data, x)
     return x_proj, λ, μ
 end
 
+#=
+For profiling
 function iterate!(data::Data{T}) where{T}
     _iterate!(data)
     #=
@@ -563,3 +569,4 @@ function iterate!(data::Data{T}) where{T}
     readline(stdin)	
     =#
 end
+=#

@@ -188,13 +188,18 @@ end
 
 function indexed_mul(S::CovarianceMatrix{Tf}, x::Vector{T}, idx::Vector{Int}) where {Tf, T}
     n = Int(length(x)/2)
-    y = S.D'*(S.D*(x[1:n] - x[n+1:end]))
+    y = S.D'*_indexed_mul(S.D, x, idx)
     return [y; -y]
 end
 
 function indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) where {T}
-    n = size(S, 1)
-    y = zeros(n)
+    y = _indexed_mul(S, x, indices)
+    return [y; -y]
+end
+
+function _indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) where {T}
+    n = size(S, 2)
+    y = zeros(size(S, 1))
     for i = 1:length(indices)
         idx = indices[i]
         coefficient = x[idx]
@@ -204,5 +209,5 @@ function indexed_mul(S::AbstractMatrix{T}, x::Vector{T}, indices::Vector{Int}) w
         end
         axpy!(coefficient, view(S, :, idx), y)
     end
-    return [y; -y]
+    return y
 end
