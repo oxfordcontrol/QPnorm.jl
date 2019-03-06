@@ -158,7 +158,7 @@ struct CovarianceMatrix{T, Tf}
 
     function CovarianceMatrix(D::T) where {T}
         # @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
-        new{T, eltype(D)}(D, reshape(mean(D, dims=1), size(D, 2)))
+        new{T, Float64}(D, reshape(mean(D, dims=1), size(D, 2)))
     end
 end
 
@@ -191,17 +191,17 @@ end
 function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
     n = Int(length(x)/2)
     w = x[1:n] - x[n+1:end]
-    y = _sparse_mul(S.D, x) .- dot(S.μ, w)
+    y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))
     y = S.D'*y - sum(y)*S.μ
     return [y; -y]
 end
 
-function sparse_mul(S::AbstractMatrix{T}, x::Vector{T}) where {T}
+function sparse_mul(S::AbstractMatrix{Tm}, x::Vector{Tv}) where {Tm, Tv}
     y = _sparse_mul(S, x)
     return [y; -y]
 end
 
-function _sparse_mul(S::AbstractMatrix{T}, x::Vector{T}) where {T}
+function _sparse_mul(S::AbstractMatrix{Tm}, x::Vector{Tv}) where {Tm, Tv}
     n = size(S, 2)
     sparse_diff = sparse(x[1:n] - x[n+1:end])
     return S*sparse_diff
