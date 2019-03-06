@@ -150,19 +150,21 @@ function remove_column!(FP::FlexibleHessian{T, Tf}, position::Int) where {T, Tf}
     FP.H = Symmetric(view(FP.data, 1:m-1, 1:m-1))
 end
 
-struct CovarianceMatrix{T}
+struct CovarianceMatrix{T, Tf}
     D::T # An kxn matrix-like object containing k n-dimensional observations with zero mean
          # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
          # and (normal/transposed) multiplication (with *)
+    μ::Vector{Tf} # equal to mean(D, dims=1)
 
     function CovarianceMatrix(D::T) where {T}
-        @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
-        new{T}(D)
+        # @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
+        new{T, eltype(D)}(D, reshape(mean(D, dims=1), size(D, 2)))
     end
 end
 
 function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector) where {T}
-    return S.D'*(S.D*x)
+    y = S.D*x .- dot(S.μ, x)
+    return S.D'*y - sum(y)*S.μ
 end
 
 function size(S::CovarianceMatrix{T}, idx::Int) where {T}
@@ -183,12 +185,14 @@ function getindex_cyclic(A, i::Int, j::Int)
 end
 
 function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
-    return dot(S.D[:, i], S.D[:, j])
+    return dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
 end
 
 function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
     n = Int(length(x)/2)
-    y = S.D'*_sparse_mul(S.D, x)
+    w = x[1:n] - x[n+1:end]
+    y = _sparse_mul(S.D, x) .- dot(S.μ, w)
+    y = S.D'*y - sum(y)*S.μ
     return [y; -y]
 end
 

@@ -33,11 +33,11 @@ end
 
 rng = MersenneTwister(123)
 dim = 5000
-points = 5000
+points = 500
 X = randn(rng, points, dim);
-X .-= mean(X, dims=1)
-# S = eTRS.CovarianceMatrix(X)
-S = X'*X
+# X .-= mean(X, dims=1)
+S = eTRS.CovarianceMatrix(X)
+# S = X'*X
 
 l = 2 # number of previous vectors
 Y = randn(rng, dim, l); F = qr(Y); Y = F.Q*Matrix(I, l, l); # Previous vector matrix is orthonormal
