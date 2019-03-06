@@ -109,7 +109,7 @@ mutable struct FlexibleHessian{T, Tf}
 
     function FlexibleHessian(S::Tf, indices::Vector{Int}) where {Tf}
         m = length(indices)
-        T = typeof(getindex(S, 1, 1))
+        T = Float64 #typeof(getindex(S, 1, 1))
         data = zeros(T, 2*m, 2*m)
         for j in 1:m, i = 1:j
             data[i, j] = -getindex_cyclic(S, indices[i], indices[j])
@@ -155,16 +155,26 @@ struct CovarianceMatrix{T, Tf}
          # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
          # and (normal/transposed) multiplication (with *)
     μ::Vector{Tf} # equal to mean(D, dims=1)
+    L_deflate::Matrix{Tf}
+    R_deflate::Matrix{Tf}
 
-    function CovarianceMatrix(D::T) where {T}
+    function CovarianceMatrix(D::T, L_deflate=zeros(0), R_deflate=zeros(0)) where {T}
         # @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
-        new{T, Float64}(D, reshape(mean(D, dims=1), size(D, 2)))
+        if length(L_deflate) == 0 || length(R_deflate) == 0
+            L_deflate = zeros(Float64, size(D, 2), 1)
+            R_deflate = zeros(Float64, size(D, 2), 1)
+        end
+        new{T, Float64}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
     end
 end
 
 function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector) where {T}
-    y = S.D*x .- dot(S.μ, x)
-    return S.D'*y - sum(y)*S.μ
+    y = Vector(S.D*x .- dot(S.μ, x))
+    y = S.D'*y - sum(y)*S.μ
+    for k = 1:size(S.L_deflate, 2)
+        y .-= (S.L_deflate[:, k:k]*(S.R_deflate[:, k:k]'*x) + S.R_deflate[:, k:k]*(S.L_deflate[:, k:k]'*x))/2
+    end
+    return y
 end
 
 function size(S::CovarianceMatrix{T}, idx::Int) where {T}
@@ -185,7 +195,11 @@ function getindex_cyclic(A, i::Int, j::Int)
 end
 
 function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
-    return dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
+    y = dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
+    for k = 1:size(S.L_deflate, 2)
+        y -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
+    end
+    return y
 end
 
 function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
@@ -193,6 +207,9 @@ function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
     w = x[1:n] - x[n+1:end]
     y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))
     y = S.D'*y - sum(y)*S.μ
+    for k = 1:size(S.L_deflate, 2)
+        y .-= (S.L_deflate[:, k:k]*(S.R_deflate[:, k:k]'*w) + S.R_deflate[:, k:k]*(S.L_deflate[:, k:k]'*w))/2
+    end
     return [y; -y]
 end
 

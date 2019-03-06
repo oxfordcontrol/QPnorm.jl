@@ -62,17 +62,18 @@ function sparse_pca(S, gamma::T, y_init::Vector{T}; kwargs...) where T
     end
 end
 
-function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=2)
+function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=1)
+    # return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
     @show @elapsed x_init = eTRS.get_initial_guess(S, Int(nz); Y=Y)
     high = norm(x_init, 1)
-    low = high/2
+    low = norm(x_init, 1)/3
 
     n = length(x_init)
     x_warm = x_init
     max_iter = 30
     for i = 1:max_iter
         gamma = (high - low)/2 + low
-        y, data = eTRS.sparse_pca(S, gamma, x_warm; Y=Y, verbosity=verbosity, printing_interval=3000, max_iter=10000);
+        y, data = eTRS.sparse_pca(S, gamma, x_warm; Y=Y, verbosity=verbosity, printing_interval=5000, max_iter=10000);
         x_warm = data.x[1:n] - data.x[n+1:end]
         nonzeros = sum(abs.(y) .> 1e-7)
         println("Nonzeros: ", nonzeros, " γ: [", high, ", ", low, "]")
@@ -85,4 +86,8 @@ function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=2)
             low = gamma
         end
     end
+end
+
+function fake_binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=1)
+    return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
 end

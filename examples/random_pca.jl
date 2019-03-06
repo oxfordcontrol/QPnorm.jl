@@ -17,9 +17,9 @@ l = 2 # number of previous vectors
 Y = randn(rng, dim, l); F = qr(Y); Y = F.Q*Matrix(I, l, l); # Previous vector matrix is orthonormal
 nonzeros = 100
 
-@time x, data = binary_search(S, nonzeros, Y)
+@time x, data = eTRS.binary_search(S, nonzeros, Y)
 readline(stdin)
-@time x, data = binary_search(S, nonzeros, Y)
+@time x, data = eTRS.binary_search(S, nonzeros, Y)
 # @time x = curve(S, x_init, Y, gamma)
 nonzeros = sum(abs.(x) .> 1e-7)
 @show nonzeros

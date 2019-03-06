@@ -195,10 +195,10 @@ function iterate!(data::Data{T}) where{T}
     projection! = x -> project!(data, x)
     # @assert maximum(data.A*data.x - data.b) <= 1e-8
     if isnan(new_constraint)
-        t_trs = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-16)
         t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
-            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12, compute_local=true)
+            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-16, compute_local=true)
             t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
             if isnan(new_constraint) && !is_minimizer
                 t_grad += @elapsed new_constraint = gradient_steps(data)
@@ -234,12 +234,15 @@ end
 function check_kkt!(data)
     residual_grad = grad(data, data.x_nonzero) + data.μ*data.x_nonzero
     l = data.F\(-residual_grad)
+    # show(stdout, "text/plain", data.H_nonzero.H); println();
+    # @show eigvals(data.H_nonzero.H), data.μ, l
     data.κ = l[1:end-1]
     data.ν = l[end]
     # println("residual grad norm in nonzeros: ", norm(residual_grad + data.L*l)) # This should be ~zero
 
     gradient = -sparse_mul(data.S, data.x)
-    # println("error in gradient calculation:", norm([data.S -data.S; -data.S data.S]*data.x - gradient)) # This should be ~zero
+    # n = Int(length(data.x)/2); Sx_ = data.S*(data.x[1:n] - data.x[n+1:end])
+    # println("error in gradient calculation:", norm([-Sx_; Sx_] - gradient)) # This should be ~zero
     residual_grad = gradient + data.μ*data.x .+ data.ν + data.W*data.κ
     # @show data.κ
     # @show residual_grad
@@ -263,6 +266,7 @@ function check_kkt!(data)
 end
 
 function move_towards_optimizers!(data, X, info)
+    # @show info
     #= Debugging of the projection accuracy
     for i = 1:size(X, 2) 
         if norm(X[:, i] - (project!(data, X[:, i] - data.x0) + data.x0)) > 1e-11
