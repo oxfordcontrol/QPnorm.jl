@@ -61,3 +61,28 @@ function sparse_pca(S, gamma::T, y_init::Vector{T}; kwargs...) where T
         return data.x[1:n] - data.x[n+1:end], data
     end
 end
+
+function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=2)
+    @show @elapsed x_init = eTRS.get_initial_guess(S, Int(nz); Y=Y)
+    high = norm(x_init, 1)
+    low = high/2
+
+    n = length(x_init)
+    x_warm = x_init
+    max_iter = 30
+    for i = 1:max_iter
+        gamma = (high - low)/2 + low
+        y, data = eTRS.sparse_pca(S, gamma, x_warm; Y=Y, verbosity=verbosity, printing_interval=3000, max_iter=10000);
+        x_warm = data.x[1:n] - data.x[n+1:end]
+        nonzeros = sum(abs.(y) .> 1e-7)
+        println("Nonzeros: ", nonzeros, " γ: [", high, ", ", low, "]")
+        if nonzeros == nz || i == max_iter
+            println("Found at iteration:", i)
+            return y, data
+        elseif nonzeros > nz
+            high = gamma
+        elseif nonzeros < nz
+            low = gamma
+        end
+    end
+end
