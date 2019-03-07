@@ -53,7 +53,7 @@ mutable struct Data{T, Tf}
     timings::DataFrame
 
     function Data(S::Tf, gamma::T, y_init::Vector{T}; kwargs...) where {T, Tf}
-        x = [max.(y_init, 0, ); -min.(y_init, 0)]
+        x = [max.(y_init, 0); -min.(y_init, 0)]
         nonzero_indices = findall(x .>= 1e-9)
         H = FlexibleHessian(S, nonzero_indices)
         return Data(S, H, gamma, y_init; kwargs...)
@@ -119,8 +119,12 @@ function add_constraint!(data, idx::Int)
     end
 end
 
-function solve_sparse_pca(S, gamma::T, y_init::Vector{T}; max_iter=Inf, kwargs...) where T
-    data = Data(S, gamma, y_init; kwargs...)
+function solve_sparse_pca(S, gamma::T, y_init::Vector{T}, H=nothing; max_iter=Inf, kwargs...) where T
+    if H == nothing
+        data = Data(S, gamma, y_init; kwargs...)
+    else
+        data = Data(S, H, gamma, y_init; kwargs...)
+    end
 
     if data.verbosity > 0
         print_header(data)

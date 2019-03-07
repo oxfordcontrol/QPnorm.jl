@@ -26,5 +26,5 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
 end
 @load "docword_nytimes.jld2" D
 vocabulary = CSV.File("vocab.nytimes.txt", header=0, datarow=1) |> DataFrame
-results = generate_principal_vectors(D, vocabulary, 10, 5)
+results = generate_principal_vectors(D, vocabulary, 50, 5)
 results |> CSV.write("results.csv")
