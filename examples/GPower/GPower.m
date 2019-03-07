@@ -21,7 +21,7 @@ function varargout=GPower(varargin)
 %
 %
 % Refer to:  
-%   M. Journée, Y. Nesterov, P. Richtárik, R. Sepulchre, Generalized power 
+%   M. JournÃ©e, Y. Nesterov, P. RichtÃ¡rik, R. Sepulchre, Generalized power 
 %   Method for sparse principal component analysis, arXiv:0811.4724v1, 2008
 %
 
@@ -30,6 +30,7 @@ RHO=varargin{2};
 m=varargin{3};
 penalty=varargin{4};
 block=varargin{5};
+x_init=varargin{6};
 if block==1,
     if nargin>5,
     mu=varargin{6};  % initialization
@@ -50,7 +51,7 @@ A_init=A;
 if m==1 || (m>1 && block==0),   %single-unit algorithm (deflation is used if m>1)                               
 %--------------------------------------------------------------------------
     switch penalty
-       case 'l1'        
+        case 'l1'        
             for comp=1:m, % loop on the components
                 rho=RHO(comp);
                 norm_a_i=zeros(n,1);
@@ -59,7 +60,11 @@ if m==1 || (m>1 && block==0),   %single-unit algorithm (deflation is used if m>1
                 end
                 [rho_max,i_max]=max(norm_a_i);
                 rho=rho*rho_max;
-                x=A(:,i_max)/norm_a_i(i_max); %initialization point  
+                if isempty(x_init)
+                    x=A(:,i_max)/norm_a_i(i_max); %initialization point  
+                else
+                    x=x_init;
+                end
                 f=zeros(iter_max,1); iter=1;
                 while 1,
                     Ax=A'*x;
@@ -71,6 +76,8 @@ if m==1 || (m>1 && block==0),   %single-unit algorithm (deflation is used if m>1
                         %pattern=find(tresh'>0);
                         %grad=A(:,pattern)*(tresh(pattern).*sign(Ax(pattern)));  % gradient
                         grad=A*tresh;
+                        % norm(x - grad/norm(grad))
+                        % iter
                         x=grad/norm(grad);                        
                     end
                     if iter>2 && (f(iter)-f(iter-1))/f(iter-1)<epsilon || iter>iter_max  % stopping criterion
@@ -78,7 +85,10 @@ if m==1 || (m>1 && block==0),   %single-unit algorithm (deflation is used if m>1
                         break
                     end
                     iter=iter+1;
-                end  
+                end
+                w = x;
+                %f(iter-10+2:iter)-f(iter-10+1:iter-1)
+                %semilogy(f(2:end)-f(1:end-1))
                 Ax=A'*x;
                 pattern=((abs(Ax)-rho) >0); % pattern of sparsity
                 z=sign(Ax).*max(abs(Ax)-rho,0);
@@ -86,8 +96,8 @@ if m==1 || (m>1 && block==0),   %single-unit algorithm (deflation is used if m>1
                     z=z/norm(z);
                 end
                 z=pattern_filling(A,pattern,z); % assign values to the nonzero elements
-                y=A*z;
-                A=A-y*z'; % deflation                
+                % y=A*z;
+                % A=A-y*z'; % deflation                
                 Z(:,comp)=z;  
             end
 
@@ -297,6 +307,7 @@ elseif (m>1 && block && sum(mu-1)~=0),  % block algorithm
     end
 end
 varargout{1}=Z;
+varargout{2}=w;
 
 %==========================================================================
 %==========================================================================
