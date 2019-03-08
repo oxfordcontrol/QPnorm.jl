@@ -150,13 +150,13 @@ function remove_column!(FP::FlexibleHessian{T, Tf}, position::Int) where {T, Tf}
     FP.H = Symmetric(view(FP.data, 1:m-1, 1:m-1))
 end
 
-struct CovarianceMatrix{T, Tf}
+struct CovarianceMatrix{T}
     D::T # An kxn matrix-like object containing k n-dimensional observations with zero mean
          # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
          # and (normal/transposed) multiplication (with *)
-    μ::Vector{Tf} # equal to mean(D, dims=1)
-    L_deflate::Matrix{Tf}
-    R_deflate::Matrix{Tf}
+    μ::Vector{Float64} # equal to mean(D, dims=1)
+    L_deflate::Matrix{Float64}
+    R_deflate::Matrix{Float64}
 
     function CovarianceMatrix(D::T, L_deflate=zeros(0), R_deflate=zeros(0)) where {T}
         # @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
@@ -164,11 +164,11 @@ struct CovarianceMatrix{T, Tf}
             L_deflate = zeros(Float64, size(D, 2), 1)
             R_deflate = zeros(Float64, size(D, 2), 1)
         end
-        new{T, Float64}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
+        new{T}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
     end
 end
 
-function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector) where {T}
+function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector{Tf}) where {T, Tf}
     y = Vector(S.D*x .- dot(S.μ, x))
     y = S.D'*y - sum(y)*S.μ
     for k = 1:size(S.L_deflate, 2)
@@ -177,7 +177,7 @@ function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector) where {T}
     return y
 end
 
-function size(S::CovarianceMatrix{T}, idx::Int) where {T}
+function size(S::CovarianceMatrix{T}, idx::Int) where {T, Tf}
     return size(S.D, 2)
 end
 
@@ -194,15 +194,21 @@ function getindex_cyclic(A, i::Int, j::Int)
     end
 end
 
-function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
-    y = dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
+function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T, Tf}
+    di = convert(SparseVector{Float64,Int32}, S.D[:, i])  # We cast it to prevent overflows
+    dj = convert(SparseVector{Float64,Int32}, S.D[:, j])
+    μi = S.μ[i]; μj = S.μ[j]
+
+    # dot(di, dj) sometimes overflows, while sum(di.*dj) doesn't
+    y = dot(di, dj) - sum(di)*μj - sum(dj)*μi + length(di)*μj*μi
+    # @show y1 = dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
     for k = 1:size(S.L_deflate, 2)
         y -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
     end
     return y
 end
 
-function sparse_mul(S::CovarianceMatrix{Tf}, x::Vector{T}) where {Tf, T}
+function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {Tf, T}
     n = Int(length(x)/2)
     w = x[1:n] - x[n+1:end]
     y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))
