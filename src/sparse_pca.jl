@@ -79,10 +79,21 @@ mutable struct Data{T, Tf}
         @assert norm(y_init) - 1 <= 1e-9
         x = [max.(y_init, 0, ); -min.(y_init, 0)]
         gamma_active = (sum(x) .>= gamma - 1e-9)
+        x_nonzero = x[nonzero_indices];
+        x0 = zeros(T, size(x_nonzero))
+        W = [Y; -Y]
+        if gamma_active
+            L = [W[nonzero_indices, :] ones(T, length(nonzero_indices))]
+        else
+            L = [W[nonzero_indices, :] zeros(T, length(nonzero_indices))]
+        end
+        F = qr(L, Val(true))
+        R = zeros(T, size(F.R) .+ 1)
+        R[1:end-1, 1:end-1] = F.R
 
-        new{T, Tf}(x, zeros(T, 0), zeros(T, 0),
+        new{T, Tf}(x, x_nonzero, x0,
             S, [Y; -Y], gamma,
-            H, zeros(T, 0, 0), qr(zeros(T, 0, 0), Val(true)), zeros(T, 0, 0),
+            H, L, F, R,
             nonzero_indices, zero_indices, gamma_active,
             zeros(T, 0, 0),
             zeros(T, 0), zero(T), zero(T), zeros(T, 0), # Multipliers
@@ -105,6 +116,7 @@ function remove_constraint!(data, idx::Int)
         add_column!(data.H_nonzero, constraint_idx)
         deleteat!(data.zero_indices, idx)
     end
+    update_factorizations!(data)
 end
 
 function add_constraint!(data, idx::Int)
@@ -117,6 +129,7 @@ function add_constraint!(data, idx::Int)
     else
         data.gamma_active = true
     end
+    update_factorizations!(data)
 end
 
 function solve_sparse_pca(S, gamma::T, y_init::Vector{T}, H=nothing; max_iter=Inf, kwargs...) where T
@@ -165,15 +178,7 @@ function iterate_interior!(data::Data{T}) where{T}
     end
 end
 
-function iterate!(data::Data{T}) where{T}
-    t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
-    t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
-    data.iteration += 1
-
-    data.x[data.zero_indices] .= 0
-    data.x_nonzero = data.x[data.nonzero_indices]
-    # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
-
+function update_factorizations!(data::Data{T}) where{T}
     if data.gamma_active
         data.L = [data.W[data.nonzero_indices, :] ones(T, length(data.nonzero_indices))]
     else
@@ -183,11 +188,22 @@ function iterate!(data::Data{T}) where{T}
     data.R = zeros(T, size(data.F.R) .+ 1)
     data.R[1:end-1, 1:end-1] = data.F.R
 
+end
+
+function iterate!(data::Data{T}) where{T}
+    t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
+    t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
+    data.iteration += 1
+
+    data.x[data.zero_indices] .= 0
+    # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
     if norm(data.x_nonzero) <= 1 - 1e-9
-        return iterate_interior!(data)
+        @show @elapsed iterate_interior!(data)
+        data.x_nonzero = data.x[data.nonzero_indices]
+        @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
+        return
     end
 
-    t_proj = @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
     if sqrt(1.0 - norm(data.x0)^2) <= 1e-10
         @warn "LICQ failed. Terminating"
         data.done = true
@@ -199,10 +215,10 @@ function iterate!(data::Data{T}) where{T}
     projection! = x -> project!(data, x)
     # @assert maximum(data.A*data.x - data.b) <= 1e-8
     if isnan(new_constraint)
-        t_trs = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-16)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12)
         t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
-            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-16, compute_local=true)
+            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12, compute_local=true)
             t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
             if isnan(new_constraint) && !is_minimizer
                 t_grad += @elapsed new_constraint = gradient_steps(data)
@@ -222,6 +238,8 @@ function iterate!(data::Data{T}) where{T}
         t_kkt = @elapsed removal_idx = check_kkt!(data)
         t_remove = @elapsed remove_constraint!(data, removal_idx)
     end
+    data.x_nonzero = data.x[data.nonzero_indices]
+    @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
     
     # Updating, Saving & Printing of timings 
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
@@ -512,7 +530,7 @@ function angle(x1, y1, x2, y2)
 end
 
 function isfeasible(data::Data{T}, x) where{T}
-    tol = 1.5*max(-minimum(data.x), sum(data.x) - data.gamma, maximum(abs.(data.W'*data.x)), data.tolerance)
+    tol = 1.5*max(-minimum(data.x_nonzero), sum(data.x_nonzero) - data.gamma, maximum(abs.(data.L'*(data.x_nonzero - data.x0))), data.tolerance)
     return max(-minimum(x), sum(x) - data.gamma, maximum(abs.(data.L'*(x - data.x0)))) <= tol
 end
 
