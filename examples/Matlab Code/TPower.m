@@ -28,7 +28,7 @@ if nargin < 2
 end
 [verbose, cardinality, optTol, maxIter, initType] = ...
     myProcessOptions(...
-    options, 'verbose', 2, 'cardinality', 10, 'optTol', 1e-6, 'maxIter', 50, 'initType', 1);
+    options, 'verbose', 2, 'cardinality', 10, 'optTol', 1e-6, 'maxIter', 500, 'initType', 1);
 
 % Output Parameter Settings
 if verbose >= 3
@@ -39,7 +39,7 @@ end
 
 %% Output Log
 if verbose >= 2
-    fprintf('TPower %10s %10s\n', ' Iteration ', ' Objective Val ');
+    fprintf('TPower %10s %10s\n', ' Iteration ', ' Objective Val ', 'Rel Change in Obj Val');
 end
 
 %% Default initialization 
@@ -57,10 +57,10 @@ if (nargin < 3)
             x0 = x0 / norm(x0);
     end
 end
-
+x0 = truncate_operator(x0, cardinality);
 x = sparse(x0);
 % power step
-s = A*x;
+s = A(x);
 g = 2*s;
 f = x'*s;
 
@@ -75,20 +75,20 @@ i = 1;
 while i <= maxIter
     
     % power step
-    s = A*x;
+    s = A(x);
     g = 2*s;
     
     % truncate step
     x = truncate_operator(g, cardinality);
-    f = x'*s;
+    f = full(x'*s);
     
-    if ( abs(f - f_old) < optTol )
+    if (abs(f - f_old)/abs(f_old) < optTol )
         break;
     end
     
     % Output Log
     if verbose >= 2
-        fprintf('TPower %10d %10f \n', i, f);
+        fprintf('TPower %10s %10s %10s\n', ' Iteration ', ' Objective Val ', 'Rel Change in Obj Val');
     end
     
     f_old = f;
