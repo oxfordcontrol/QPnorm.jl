@@ -37,9 +37,9 @@ function get_initial_guess(S, nnz::Int; Y::Matrix{T}=zeros(0, 0)) where {T}
     for i in length(H_nonzero.indices)
         idx = H_nonzero.indices[i]
         if idx < n && y[idx] < 0
-            H_nonzero.indices += n
+            H_nonzero.indices[i] += n
         elseif idx > n && y[idx - n] > 0
-            H_nonzero.indices -= n
+            H_nonzero.indices[i] -= n
         end
     end
     return y, H_nonzero
@@ -70,9 +70,11 @@ function sparse_pca(S::Tf, gamma::T, y_init::Vector{T}, H=nothing; kwargs...) wh
     end
 end
 
-function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=1)
+function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=2)
     # return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
     @show @elapsed x_init, H_nonzero = eTRS.get_initial_guess(S, Int(nz); Y=Y)
+    println("Initial variance:", dot(x_init, S*sparse(x_init)))
+    H_nonzero = nothing
     high = norm(x_init, 1)
     low = norm(x_init, 1)/3
 
