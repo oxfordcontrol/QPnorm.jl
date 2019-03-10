@@ -194,7 +194,7 @@ function getindex_cyclic(A, i::Int, j::Int)
     end
 end
 
-function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T, Tf}
+function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
     di = convert(SparseVector{Float64,Int32}, S.D[:, i])  # We cast it to prevent overflows
     dj = convert(SparseVector{Float64,Int32}, S.D[:, j])
     μi = S.μ[i]; μj = S.μ[j]
@@ -208,7 +208,7 @@ function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T, Tf}
     return y
 end
 
-function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {Tf, T}
+function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {T}
     n = Int(length(x)/2)
     w = x[1:n] - x[n+1:end]
     y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))
