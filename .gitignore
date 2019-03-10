@@ -3,3 +3,4 @@
 get_results.sh
 *.txt
 examples/garbage/**
+*.mat
