@@ -9,7 +9,7 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
     n = size(D, 2)
     L_deflate = zeros(n, 0); R_deflate = zeros(n, 0)
     results = DataFrame()
-    for i = 1:5
+    for i = 1:k
         S = eTRS.CovarianceMatrix(D, L_deflate, R_deflate)
         x, data = eTRS.binary_search(S, nonzeros)
         nonzero_indices = findall(abs.(x) .> 1e-7)
@@ -17,7 +17,7 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
         results[Symbol("Weights_", i)] = x[nonzero_indices]
 
         Sx = Vector(S*sparse(x))
-        Sx[findall(abs.(x) .< 1e-7)] .= 0.0
+        println("Final variance of ", i, "th vector", dot(x, Sx))
         L_deflate = [L_deflate x]
         R_deflate = [R_deflate Sx]
         results |> CSV.write("results.csv")
@@ -25,6 +25,13 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
     return results
 end
 @load "docword_nytimes.jld2" D
+D = D./maximum(D);
 vocabulary = CSV.File("vocab.nytimes.txt", header=0, datarow=1) |> DataFrame
-results = generate_principal_vectors(D, vocabulary, 50, 5)
-results |> CSV.write("results.csv")
+D = convert(SparseMatrixCSC{Float64,Int64}, D)
+@time results = generate_principal_vectors(D, vocabulary, 30, 5)
+@time results = generate_principal_vectors(D, vocabulary, 30, 5)
+nothing
+#=
+@show @time results = generate_principal_vectors(D, vocabulary, 50, 1)
+@show @time results = generate_principal_vectors(D, vocabulary, 50, 1)
+=#

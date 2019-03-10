@@ -37,6 +37,7 @@ mutable struct Data{T, Tf}
     μ::T # Lagrange Multiplier for the ||x|| = 1 constraint
     ν::T # Lagrange Multiplier for the sum(x) <= gamma constraint
     κ::Vector{T} # Lagrange mutliplier for the orthogonality constraint
+    sorted_indices::Vector{Int}
 
     # Options
     tolerance::T
@@ -55,7 +56,7 @@ mutable struct Data{T, Tf}
     function Data(S::Tf, gamma::T, y_init::Vector{T}; kwargs...) where {T, Tf}
         x = [max.(y_init, 0); -min.(y_init, 0)]
         nonzero_indices = findall(x .>= 1e-9)
-        H = FlexibleHessian(S, nonzero_indices)
+        @time H = FlexibleHessian(S, nonzero_indices)
         return Data(S, H, gamma, y_init; kwargs...)
     end
 
@@ -96,7 +97,7 @@ mutable struct Data{T, Tf}
             H, L, F, R,
             nonzero_indices, zero_indices, gamma_active,
             zeros(T, 0, 0),
-            zeros(T, 0), zero(T), zero(T), zeros(T, 0), # Multipliers
+            zeros(T, 0), zero(T), zero(T), zeros(T, 0), Int[], # Multipliers
             T(tolerance), verbosity, printing_interval,  # Options
             false, 0, NaN, '-', 0, 0,  # Logging
             # Timings
@@ -198,9 +199,9 @@ function iterate!(data::Data{T}) where{T}
     data.x[data.zero_indices] .= 0
     # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
     if norm(data.x_nonzero) <= 1 - 1e-9
-        @show @elapsed iterate_interior!(data)
+        iterate_interior!(data)
         data.x_nonzero = data.x[data.nonzero_indices]
-        @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
+        data.x0 = data.x_nonzero - project(data, data.x_nonzero)
         return
     end
 
@@ -239,7 +240,7 @@ function iterate!(data::Data{T}) where{T}
         t_remove = @elapsed remove_constraint!(data, removal_idx)
     end
     data.x_nonzero = data.x[data.nonzero_indices]
-    @elapsed data.x0 = data.x_nonzero - project(data, data.x_nonzero)
+    data.x0 = data.x_nonzero - project(data, data.x_nonzero)
     
     # Updating, Saving & Printing of timings 
     push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
@@ -262,6 +263,30 @@ function check_kkt!(data)
     data.ν = l[end]
     # println("residual grad norm in nonzeros: ", norm(residual_grad + data.L*l)) # This should be ~zero
 
+    ###
+    # This is trying to guess a constraint with negative lagrange multiplier
+    # based on the lagrange multipliers of the previous iterations
+    n = Int(length(data.x)/2);
+    cancelling_terms = data.μ*data.x .+ data.ν + data.W*data.κ
+    if length(data.sorted_indices) > 0
+        for i = 1:min(length(data.sorted_indices), 5)
+            idx = data.sorted_indices[i]
+            w = sparse(data.x[1:n] - data.x[n+1:end])
+            Dw = Vector(data.S.D*w) .- dot(data.S.μ, w)
+            if idx <= n
+                value = -(dot(Dw, data.S.D[:, idx]) - sum(Dw)*data.S.μ[idx])
+            else
+                value = dot(Dw, data.S.D[:, idx - n]) - sum(Dw)*data.S.μ[idx - n]
+            end
+            if value + cancelling_terms[idx] < 0
+                removal_idx = findfirst(data.zero_indices .== data.sorted_indices[i])
+                deleteat!(data.sorted_indices, i)
+                data.residual = -Inf
+                return removal_idx
+            end
+        end
+    end
+    ###
     gradient = -sparse_mul(data.S, data.x)
     # n = Int(length(data.x)/2); Sx_ = data.S*(data.x[1:n] - data.x[n+1:end])
     # println("error in gradient calculation:", norm([-Sx_; Sx_] - gradient)) # This should be ~zero
@@ -269,6 +294,7 @@ function check_kkt!(data)
     # @show data.κ
     # @show residual_grad
     data.λ = residual_grad[data.zero_indices]
+    data.sorted_indices = data.zero_indices[sortperm(data.λ)]
     residual_grad[data.zero_indices] .-= data.λ
 
     data.residual = norm(residual_grad)
@@ -282,6 +308,11 @@ function check_kkt!(data)
         else
             data.gamma_active = false
         end
+    end
+    if removal_idx > 0
+        # Delete the respective index from the list of multipliers to be guessed for removal.
+        i = findfirst(data.sorted_indices .== data.zero_indices[removal_idx])
+        deleteat!(data.sorted_indices, i)
     end
 
     return removal_idx
