@@ -111,8 +111,9 @@ mutable struct FlexibleHessian{T, Tf}
         m = length(indices)
         T = Float64 #typeof(getindex(S, 1, 1))
         data = zeros(T, 2*m, 2*m)
-        for j in 1:m, i = 1:j
-            data[i, j] = -getindex_cyclic(S, indices[i], indices[j])
+        for j in 1:m
+            multipliers, unwrapped_indices_i, unwrapped_j = unwrap(size(S, 1), indices[1:j], indices[j])
+            data[1:j, j] = -multipliers.*getindex(S, unwrapped_indices_i, unwrapped_j)
         end
         new{T, Tf}(S, Symmetric(view(data, 1:m, 1:m)), data, copy(indices))
     end
@@ -129,9 +130,8 @@ function add_column!(FP::FlexibleHessian{T, Tf}, idx::Int) where {T, Tf}
     end
 
     append!(FP.indices, idx)
-    for i in 1:m+1
-        FP.data[i, m+1] = -getindex_cyclic(FP.S, FP.indices[i], idx)
-    end
+    multipliers, unwrapped_indices_i, j = unwrap(size(FP.S, 1), FP.indices, idx)
+    FP.data[1:m+1, m+1] = -multipliers.*getindex(FP.S, unwrapped_indices_i, j)
     FP.H = Symmetric(view(FP.data, 1:m+1, 1:m+1))
     # W = [FP.P_full -FP.P_full; -FP.P_full FP.P_full]
     # show(stdout, "text/plain", W[FP.indices, FP.indices]); println()
@@ -155,6 +155,7 @@ struct CovarianceMatrix{T}
          # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
          # and (normal/transposed) multiplication (with *)
     μ::Vector{Float64} # equal to mean(D, dims=1)
+    v_ones::Vector{Int64} # Used for efficient sum of sparse vectors (sum function seems to be slow)
     L_deflate::Matrix{Float64}
     R_deflate::Matrix{Float64}
 
@@ -164,7 +165,8 @@ struct CovarianceMatrix{T}
             L_deflate = zeros(Float64, size(D, 2), 1)
             R_deflate = zeros(Float64, size(D, 2), 1)
         end
-        new{T}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
+        v_ones = ones(Int64, size(D, 1))
+        new{T}(D, reshape(mean(D, dims=1), size(D, 2)), v_ones, L_deflate, R_deflate)
     end
 end
 
@@ -181,34 +183,43 @@ function size(S::CovarianceMatrix{T}, idx::Int) where {T, Tf}
     return size(S.D, 2)
 end
 
-function getindex_cyclic(A, i::Int, j::Int)
-    n = size(A, 1)
-    if i > size(A, 1) && j > size(A, 1)
-        return getindex(A, i - n, j - n)
-    elseif i > size(A, 1)
-        return -getindex(A, i - n, j)
-    elseif j > size(A, 1)
-        return -getindex(A, i, j - n)
-    else
-        return getindex(A, i, j)
+function unwrap(n::Int, i_indices::Vector{Int}, j::Int)
+    unwrapped_indices_i = similar(i_indices)
+    multipliers = similar(i_indices)
+    idx = 1
+    for i in i_indices
+        if (i > n && j > n) || (i <= n && j <= n)
+            multipliers[idx] = 1
+        else
+            multipliers[idx] = -1
+        end
+
+        unwrapped_indices_i[idx] = mod(i - 1, n) + 1
+        idx = idx + 1;
     end
+    unwrapped_j = mod(j - 1, n) + 1
+    return multipliers, unwrapped_indices_i, unwrapped_j
 end
 
-function getindex(S::CovarianceMatrix{T}, i::Int, j::Int) where {T}
-    di = convert(SparseVector{Float64,Int32}, S.D[:, i])  # We cast it to prevent overflows
-    dj = convert(SparseVector{Float64,Int32}, S.D[:, j])
-    μi = S.μ[i]; μj = S.μ[j]
-
-    # dot(di, dj) sometimes overflows, while sum(di.*dj) doesn't
-    y = dot(di, dj) - sum(di)*μj - sum(dj)*μi + length(di)*μj*μi
-    # @show y1 = dot(S.D[:, i] .- S.μ[i], S.D[:, j] .- S.μ[j])
-    for k = 1:size(S.L_deflate, 2)
-        y -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
+function getindex(S, i_indices::Vector{Int}, j::Int)
+    n = length(i_indices)
+    y = zeros(Float64, n)
+    @inbounds dj = view(S.D, :, j)
+    @inbounds μj = S.μ[j]
+    @inbounds for idx in 1:n
+        i = i_indices[idx]
+        @inbounds di = view(S.D, :, i);
+        μi = S.μ[i]
+        y[idx] = dot(di, dj) - dot(S.v_ones, di)*μj - dot(S.v_ones, dj)*μi + length(di)*μj*μi
+        # Deflation
+        @inbounds for k = 1:size(S.L_deflate, 2)
+            y[idx] -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
+        end
     end
     return y
 end
 
-function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {T}
+function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {T, Tf}
     n = Int(length(x)/2)
     w = x[1:n] - x[n+1:end]
     y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))

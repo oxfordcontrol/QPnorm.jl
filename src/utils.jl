@@ -70,7 +70,7 @@ function sparse_pca(S::Tf, gamma::T, y_init::Vector{T}, H=nothing; kwargs...) wh
     end
 end
 
-function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=2)
+function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=1)
     # return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
     @show @elapsed x_init, H_nonzero = eTRS.get_initial_guess(S, Int(nz); Y=Y)
     println("Initial variance:", dot(x_init, S*sparse(x_init)))

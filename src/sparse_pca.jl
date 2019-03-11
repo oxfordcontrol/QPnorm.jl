@@ -56,7 +56,7 @@ mutable struct Data{T, Tf}
     function Data(S::Tf, gamma::T, y_init::Vector{T}; kwargs...) where {T, Tf}
         x = [max.(y_init, 0); -min.(y_init, 0)]
         nonzero_indices = findall(x .>= 1e-9)
-        @time H = FlexibleHessian(S, nonzero_indices)
+        H = FlexibleHessian(S, nonzero_indices)
         return Data(S, H, gamma, y_init; kwargs...)
     end
 
@@ -196,7 +196,7 @@ function iterate!(data::Data{T}) where{T}
     t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
     data.iteration += 1
 
-    data.x[data.zero_indices] .= 0
+    # data.x[data.zero_indices] .= 0
     # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
     if norm(data.x_nonzero) <= 1 - 1e-9
         iterate_interior!(data)
@@ -230,7 +230,7 @@ function iterate!(data::Data{T}) where{T}
         end
     end
     # @show norm(data.x[data.nonzero_indices] - data.x_nonzero)
-    data.x .= 0
+    # data.x .= 0
     data.x[data.nonzero_indices] .= data.x_nonzero
 
     if !isnan(new_constraint)
