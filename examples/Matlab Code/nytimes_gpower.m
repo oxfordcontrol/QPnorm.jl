@@ -1,10 +1,7 @@
-% load docword_nytimes.mat
+load docword_nytimes.mat
 vocabulary = readtable("vocab.nytimes.txt");
 
-% dims = 15000;
-% observations = 300;
-% A = randn(observations, dims);
-% A = A - mean(A, 1);
+D = D./max(max(D));
 means = mean(D, 1)';
 
 x = zeros(0);

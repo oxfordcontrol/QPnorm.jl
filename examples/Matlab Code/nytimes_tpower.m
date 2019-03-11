@@ -2,13 +2,15 @@ load docword_nytimes.mat
 vocabulary = readtable("vocab.nytimes.txt");
 
 D = D./max(max(D));
-eans = mean(D, 1)';
+means = mean(D, 1)';
 
 x = zeros(0);
-nz = 30; % Desired nonzeros
-init_type = "default_tpower"
+nz = 50; % Desired nonzeros
+% init_type = "default_tpower";
+init_type = "truncutated_eigenvector";
 
-%tic;
+
+tic;
 
 l_deflate = zeros(size(D, 1), 0);
 r_deflate = zeros(size(D, 2), 0);
@@ -51,7 +53,7 @@ for k = 1:1 % Number of sparse principal vectors desired
     l_deflate = [l_deflate y];
     r_deflate = [r_deflate z];
 end
-%toc
+toc
 
 function y = mul(A, mu, l_deflate, r_deflate, x)
     y = A*x - mu'*x;

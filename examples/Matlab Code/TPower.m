@@ -39,7 +39,7 @@ end
 
 %% Output Log
 if verbose >= 2
-    fprintf('TPower %10s %10s\n', ' Iteration ', ' Objective Val ', 'Rel Change in Obj Val');
+    fprintf('TPower %10s %10s %10s\n', ' Iteration ', ' Objective Val ', 'Rel Change in Obj Val');
 end
 
 %% Default initialization 
@@ -88,7 +88,7 @@ while i <= maxIter
     
     % Output Log
     if verbose >= 2
-        fprintf('TPower %10s %10s %10s\n', ' Iteration ', ' Objective Val ', 'Rel Change in Obj Val');
+        fprintf('TPower %10d %15f %15f \n', i, f, abs(f - f_old)/abs(f_old));
     end
     
     f_old = f;
