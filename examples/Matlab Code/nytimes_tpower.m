@@ -9,7 +9,6 @@ nz = 50; % Desired nonzeros
 % init_type = "default_tpower";
 init_type = "truncutated_eigenvector";
 
-
 tic;
 
 l_deflate = zeros(size(D, 1), 0);

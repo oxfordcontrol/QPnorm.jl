@@ -18,10 +18,12 @@ for k = 1:1 % Number of sparse principal vectors desired
     S = @(x) At(full(A(x)));
     % Get initial point
     % [x, rho_max] = get_initial_point(D, means, l_deflate, r_deflate);
-    rho_max = 500;
+    %%%% Truncated Eigenvector start %%%%
     [x, l] = eigs(S, size(D, 2), 1, 'lr', 'tol', 1e-6);
     x = (D*x); x = x/norm(x);
-    % x = randn(size(D, 1), 1); rho_max = 50; % Dummy start
+    rho_max = 500;
+    %%%% Dummy start %%%%
+    % x = randn(size(D, 1), 1); rho_max = 500; % Dummy start
     
     high = 0.2;
     low = 0.00001;
@@ -80,21 +82,16 @@ end
 
 function [x, rho_max] = get_initial_point(D, means, l_deflate, r_deflate)
     n = size(D, 2);
-    norm_A_i=zeros(n,1);
-    for i=1:n,
-        a = D(:, i);
-        a = a - means(i)*ones(size(a)); % Remove mean
-        for j = 1:size(l_deflate, 2) % Deflate
-            a = a - l_deflate(:, j)*r_deflate(i, j);
-        end
-        norm_A_i(i)=norm(a);
+    norm_D_i=zeros(n,1);
+    for i = 1:n
+        norm_D_i(i) = norm(D(:, i))^2 + n*means(i)^2 - 2*sum(D(:, i))*means(i); % WARNING: no deflation
     end
-    [rho_max,i_max]=max(norm_A_i);
+    [rho_max,i_max]=max(norm_D_i);
 
-    a_max = D(:, i_max);
-    a_max = a_max - means(i_max)*ones(size(a_max)); % Remove mean
+    d_max = D(:, i_max);
+    d_max = d_max - means(i_max)*ones(size(d_max)); % Remove mean
     for j = 1:size(l_deflate, 2) % Deflate
-        a_max = a_max - l_deflate(:, j)*r_deflate(i_max, j);
+        d_max = d_max - l_deflate(:, j)*r_deflate(i_max, j);
     end
-    x=a_max/norm_A_i(i_max); %initialization point  
+    x=d_max/norm(d_max); %initialization point  
 end

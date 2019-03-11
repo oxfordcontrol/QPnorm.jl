@@ -72,6 +72,7 @@ f_old = f;
 i = 1;
 
 %% Main algorithmic loop
+fprintf('TPower %10d %15f %15f \n', 0, f, NaN);
 while i <= maxIter
     
     % power step
