@@ -111,11 +111,11 @@ mutable struct FlexibleHessian{T, Tf}
         m = length(indices)
         T = Float64 #typeof(getindex(S, 1, 1))
         data = zeros(T, 2*m, 2*m)
-        for j in 1:m
-            multipliers, unwrapped_indices_i, unwrapped_j = unwrap(size(S, 1), indices[1:j], indices[j])
-            data[1:j, j] = -multipliers.*getindex(S, unwrapped_indices_i, unwrapped_j)
-        end
-        new{T, Tf}(S, Symmetric(view(data, 1:m, 1:m)), data, copy(indices))
+        unwrapped_indices = mod.(indices .- 1, size(S, 1)) .+ 1
+        H = view(data, 1:m, 1:m)
+        H .= -getindex(S, unwrapped_indices, unwrapped_indices)
+        unwrap!(H, size(S, 1), indices, indices)
+        new{T, Tf}(S, Symmetric(H), data, copy(indices))
     end
 end
 
@@ -130,8 +130,11 @@ function add_column!(FP::FlexibleHessian{T, Tf}, idx::Int) where {T, Tf}
     end
 
     append!(FP.indices, idx)
-    multipliers, unwrapped_indices_i, j = unwrap(size(FP.S, 1), FP.indices, idx)
-    FP.data[1:m+1, m+1] = -multipliers.*getindex(FP.S, unwrapped_indices_i, j)
+    n = size(FP.S, 1)
+    unwrapped_indices = mod.(FP.indices .- 1, n) .+ 1
+    FP.data[1:m+1, m+1:m+1] = -getindex(FP.S, unwrapped_indices, [mod(idx - 1, n) + 1])
+    unwrap!(view(FP.data, 1:m+1, m+1), n, FP.indices, [idx])
+
     FP.H = Symmetric(view(FP.data, 1:m+1, 1:m+1))
     # W = [FP.P_full -FP.P_full; -FP.P_full FP.P_full]
     # show(stdout, "text/plain", W[FP.indices, FP.indices]); println()
@@ -155,7 +158,6 @@ struct CovarianceMatrix{T}
          # The matrix-like type {T} of D must allow for indexing (of the form D[:, i])
          # and (normal/transposed) multiplication (with *)
     μ::Vector{Float64} # equal to mean(D, dims=1)
-    v_ones::Vector{Int64} # Used for efficient sum of sparse vectors (sum function seems to be slow)
     L_deflate::Matrix{Float64}
     R_deflate::Matrix{Float64}
 
@@ -165,8 +167,7 @@ struct CovarianceMatrix{T}
             L_deflate = zeros(Float64, size(D, 2), 1)
             R_deflate = zeros(Float64, size(D, 2), 1)
         end
-        v_ones = ones(Int64, size(D, 1))
-        new{T}(D, reshape(mean(D, dims=1), size(D, 2)), v_ones, L_deflate, R_deflate)
+        new{T}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
     end
 end
 
@@ -183,39 +184,41 @@ function size(S::CovarianceMatrix{T}, idx::Int) where {T, Tf}
     return size(S.D, 2)
 end
 
-function unwrap(n::Int, i_indices::Vector{Int}, j::Int)
-    unwrapped_indices_i = similar(i_indices)
-    multipliers = similar(i_indices)
-    idx = 1
-    for i in i_indices
-        if (i > n && j > n) || (i <= n && j <= n)
-            multipliers[idx] = 1
-        else
-            multipliers[idx] = -1
+function unwrap!(X, n::Int, i_indices::Vector{Int}, j_indices::Vector{Int})
+    idx = 1;
+    @inbounds for j in j_indices, i in i_indices
+        if (i <= n && j > n) || (i > n && j <= n)
+            X[idx] = -X[idx]
         end
-
-        unwrapped_indices_i[idx] = mod(i - 1, n) + 1
-        idx = idx + 1;
+        idx += 1
     end
-    unwrapped_j = mod(j - 1, n) + 1
-    return multipliers, unwrapped_indices_i, unwrapped_j
+    return X
 end
 
-function getindex(S, i_indices::Vector{Int}, j::Int)
-    n = length(i_indices)
-    y = zeros(Float64, n)
-    @inbounds dj = view(S.D, :, j)
-    @inbounds μj = S.μ[j]
-    @inbounds for idx in 1:n
-        i = i_indices[idx]
-        @inbounds di = view(S.D, :, i);
-        μi = S.μ[i]
-        y[idx] = dot(di, dj) - dot(S.v_ones, di)*μj - dot(S.v_ones, dj)*μi + length(di)*μj*μi
-        # Deflation
+function getindex(S::CovarianceMatrix, i_indices::Vector{Int}, j_indices::Vector{Int})
+    Dj = S.D[:, j_indices]
+    sum_dj = sum(Dj, dims=1)'
+    μ_j = S.μ[j_indices, :]
+    if i_indices === j_indices
+        Di = Dj
+        sum_di = sum_dj
+        μ_i = μ_j
+    else
+        Di = S.D[:, i_indices]
+        sum_di = sum(Di, dims=1)'
+        μ_i = S.μ[i_indices, :]
+    end
+    y = Dj'*Di - sum_dj*μ_i' - μ_j*sum_di' + size(S.D, 1)*μ_j*μ_i'
+
+    # Deflation
+    idx = 1;
+    @inbounds for j in j_indices, i in i_indices
         @inbounds for k = 1:size(S.L_deflate, 2)
             y[idx] -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
         end
+        idx += 1
     end
+
     return y
 end
 

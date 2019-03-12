@@ -7,10 +7,13 @@ rng = MersenneTwister(123)
 n = 100 # Number of observations
 m = 50 # Number of dimensions
 nz = 10 # Nonzeros
-D = sprandn(rng, n, m, 0.1)
-indices = sortperm(randn(2*m))
+D = randn(rng, n, m)
+# D .-= mean(D, dims=1)
+indices = sortperm(randn(m))
 nz_indices = indices[1:nz]
 S = eTRS.CovarianceMatrix(D)
+# D_ = D .- mean(D, dims=1)
+# show(stdout, "text/plain", (D_'*D_)[nz_indices, nz_indices]); println()
 H = eTRS.FlexibleHessian(S, nz_indices)
 x = zeros(2*m)
 x[nz_indices] = randn(nz)
