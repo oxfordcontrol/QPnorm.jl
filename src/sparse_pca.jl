@@ -79,7 +79,6 @@ mutable struct Data{T, Tf}
         @assert norm(x_init) - 1 <= 1e-9
         gamma_active = (sum(x_init) .>= gamma - 1e-9)
         x_nonzero = x_init[nonzero_indices];
-        x0 = zeros(T, size(x_nonzero))
         if gamma_active
             L = [W[nonzero_indices, :] ones(T, length(nonzero_indices))]
         else
@@ -88,6 +87,7 @@ mutable struct Data{T, Tf}
         F = qr(L, Val(true))
         R = zeros(T, size(F.R) .+ 1)
         R[1:end-1, 1:end-1] = F.R
+        x0 = x_nonzero - project!(copy(x_nonzero), L, F)
 
         new{T, Tf}(x_init, x_nonzero, x0,
             S, W, gamma,
