@@ -53,36 +53,33 @@ mutable struct Data{T, Tf}
     eigen_steps::Int
     timings::DataFrame
 
-    function Data(S::Tf, gamma::T, y_init::Vector{T}; kwargs...) where {T, Tf}
-        x = [max.(y_init, 0); -min.(y_init, 0)]
-        nonzero_indices = findall(x .>= 1e-9)
+    function Data(S::Tf, gamma::T, x_init::Vector{T}; kwargs...) where {T, Tf}
+        nonzero_indices = findall(x_init .>= 1e-9)
         @time H = FlexibleHessian(S, nonzero_indices)
-        return Data(S, H, gamma, y_init; kwargs...)
+        return Data(S, H, gamma, x_init; kwargs...)
     end
 
-    function Data(S::Tf, H::FlexibleHessian{T, Tf}, gamma::T, y_init::Vector{T}; Y::Matrix{T}=zeros(T, 0, 0),
+    function Data(S::Tf, H::FlexibleHessian{T, Tf}, gamma::T, x_init::Vector{T}; W::Matrix{T}=zeros(T, 0, 0),
         verbosity=1, printing_interval=50, tolerance=1e-11, kwargs...) where {T, Tf}
 
         @assert !isa(S, Symmetric) "Do not pass the covariance matrix in Symmetric type."
         nonzero_indices = copy(H.indices)
-        zero_indices = setdiff(1:2*length(y_init), nonzero_indices)
-        if length(Y) == 0
-            Y = zeros(T, size(S, 1), 1)
+        zero_indices = setdiff(1:length(x_init), nonzero_indices)
+        if length(W) == 0
+            W = zeros(T, length(x_init), 1)
         else
-            @assert norm(Y'*Y - I) < 1e-9 "Matrix of previous sparse principal vectors must be orthonormal."
+            @assert norm(W'*W - I) < 1e-9 "Matrix of previous sparse principal vectors must be orthonormal."
         end
 
-        @assert norm(Y'*y_init) < 1e-9 "Starting vector not perpendicular to previous principal vectors"
-        if norm(y_init, 1) > gamma || norm(y_init) - 1 <= -1e-9
+        @assert norm(W'*x_init) < 1e-9 "Starting vector not perpendicular to previous principal vectors"
+        if norm(x_init, 1) > gamma || norm(x_init) - 1 <= -1e-9
             # Scale y_init so that either the one-norm or two norm constraint is active
-            y_init /= max(norm(y_init, 1)/gamma, norm(y_init, 2)) 
+            x_init /= max(norm(x_init, 1)/gamma, norm(x_init, 2)) 
         end
-        @assert norm(y_init) - 1 <= 1e-9
-        x = [max.(y_init, 0, ); -min.(y_init, 0)]
-        gamma_active = (sum(x) .>= gamma - 1e-9)
-        x_nonzero = x[nonzero_indices];
+        @assert norm(x_init) - 1 <= 1e-9
+        gamma_active = (sum(x_init) .>= gamma - 1e-9)
+        x_nonzero = x_init[nonzero_indices];
         x0 = zeros(T, size(x_nonzero))
-        W = [Y; -Y]
         if gamma_active
             L = [W[nonzero_indices, :] ones(T, length(nonzero_indices))]
         else
@@ -92,8 +89,8 @@ mutable struct Data{T, Tf}
         R = zeros(T, size(F.R) .+ 1)
         R[1:end-1, 1:end-1] = F.R
 
-        new{T, Tf}(x, x_nonzero, x0,
-            S, [Y; -Y], gamma,
+        new{T, Tf}(x_init, x_nonzero, x0,
+            S, W, gamma,
             H, L, F, R,
             nonzero_indices, zero_indices, gamma_active,
             zeros(T, 0, 0),

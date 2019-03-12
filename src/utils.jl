@@ -60,8 +60,10 @@ function polish_solution(x::Vector{T}, H_nonzero::FlexibleHessian{T, Tf}, W::Mat
     return x[1:n] - x[n+1:end]
 end
 
-function sparse_pca(S::Tf, gamma::T, y_init::Vector{T}, H=nothing; kwargs...) where {T, Tf}
-    data = solve_sparse_pca(S, gamma, y_init, H; kwargs...)
+function sparse_pca(S::Tf, gamma::T, y_init::Vector{T}, H=nothing; Y=zeros(0, 0), kwargs...) where {T, Tf}
+    W = [Y; -Y]
+    x_init = [max.(y_init, 0, ); -min.(y_init, 0)]
+    data = solve_sparse_pca(S, gamma, x_init, H; W=W, kwargs...)
     if true # Polish?
         return polish_solution(copy(data.x), data.H_nonzero, data.W), data
     else
@@ -70,7 +72,7 @@ function sparse_pca(S::Tf, gamma::T, y_init::Vector{T}, H=nothing; kwargs...) wh
     end
 end
 
-function binary_search(S, nz, Y=zeros(size(S, 1), 0); verbosity=1)
+function binary_search(S, nz, Y=zeros(0, 0); verbosity=1)
     # return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
     @show @elapsed x_init, H_nonzero = eTRS.get_initial_guess(S, Int(nz); Y=Y)
     println("Initial variance:", dot(x_init, S*sparse(x_init)))
