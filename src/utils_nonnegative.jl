@@ -2,21 +2,25 @@ using LinearAlgebra
 using Arpack
 using LinearMaps
 
-function sparsify_nonnegative(x::Vector{Float64}, nnz::Int)
+function sparsify_nonnegative(S, x::Vector{Float64}, nnz::Int)
     # Discard (i.e. make zero) all but the largest nnz (in absolute value) elements in x
     y = x/norm(x)
     sorted_indices = sortperm(y)
 
     indices_positive = sorted_indices[end-nnz+1:end]
-    y_positive = max.(y[indices_positive], 0)
-    indices_negative = sorted_indices[1:nnz]
-    y_negative = max.(-y[indices_negative], 0)
+    y_positive = zeros(length(x))
+    y_positive[indices_positive] = max.(y[indices_positive], 0)
+    y_positive ./= norm(y_positive)
 
-    y .= 0
-    if norm(y_positive) > norm(y_negative)
-        y[indices_positive] .= y_positive
+    indices_negative = sorted_indices[1:nnz]
+    y_negative = zeros(length(x))
+    y_negative[indices_negative] = max.(-y[indices_negative], 0)
+    y_negative ./= norm(y_negative)
+
+    if dot(y_positive, S*y_positive) > dot(y_negative, S*y_negative)
+        return y_positive
     else
-        y[indices_negative] .= y_negative
+        return y_negative
     end
     y ./= norm(y)
     return y
@@ -45,7 +49,7 @@ function get_initial_guess_nonnegative(S, nnz; Y=zeros(0, 0))
     end
     v_max = eigs(L, which=:LR, nev=1, tol=1e-7)[2][:]
     # Keep on the largest elements (we make the others zero)
-    return sparsify_nonnegative(v_max, nnz)
+    return sparsify_nonnegative(S, v_max, nnz)
 end
 
 function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=2)
