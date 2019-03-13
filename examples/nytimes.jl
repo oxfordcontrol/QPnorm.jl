@@ -11,7 +11,7 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
     results = DataFrame()
     for i = 1:k
         S = eTRS.CovarianceMatrix(D, L_deflate, R_deflate)
-        x, data = eTRS.binary_search_nonzero(S, nonzeros)
+        x, data = eTRS.binary_search_nonnegative(S, nonzeros)
         nonzero_indices = findall(abs.(x) .> 1e-8)
         permutation = sortperm(-abs.(x[nonzero_indices]))
         results[Symbol("Words_", i)] = vocabulary[:Column1][nonzero_indices[permutation]]
