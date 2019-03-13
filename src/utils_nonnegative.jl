@@ -52,7 +52,7 @@ function get_initial_guess_nonnegative(S, nnz; Y=zeros(0, 0))
     return sparsify_nonnegative(S, v_max, nnz)
 end
 
-function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=2)
+function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=1)
     @show @elapsed x_init = eTRS.get_initial_guess_nonnegative(S, nz; Y=Y)
     println("Initial variance:", dot(x_init, S*sparse(x_init)))
     H = nothing

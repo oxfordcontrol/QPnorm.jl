@@ -29,7 +29,7 @@ end
 # D = convert(SparseMatrixCSC{Int64,Int64}, D)
 D = D./maximum(D);
 vocabulary = CSV.File("vocab.nytimes.txt", header=0, datarow=1) |> DataFrame
-@time results = generate_principal_vectors(D, vocabulary, 50, 5)
+@time results = generate_principal_vectors(D, vocabulary, 50, 1)
 println("Presss enter for next run..."); readline(stdin)
-@time results = generate_principal_vectors(D, vocabulary, 50, 5)
+@time results = generate_principal_vectors(D, vocabulary, 50, 1)
 nothing

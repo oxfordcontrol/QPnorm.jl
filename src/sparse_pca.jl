@@ -241,13 +241,15 @@ function iterate!(data::Data{T}) where{T}
     data.x0 = data.x_nonzero - project(data, data.x_nonzero)
     
     # Updating, Saving & Printing of timings 
-    push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
-    if data.done && data.verbosity > 1
-        data.timings |> CSV.write(string("timings.csv"))
-        sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
-        labels =  names(data.timings)
-        show(stdout, "text/plain", [labels sums]); println()
-        @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
+    if data.verbosity > 1
+        push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
+        if data.done && data.verbosity > 1
+            data.timings |> CSV.write(string("timings.csv"))
+            sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
+            labels =  names(data.timings)
+            show(stdout, "text/plain", [labels sums]); println()
+            @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
+        end
     end
     # @assert maximum(data.A*data.x - data.b) <= 1e-8
 end
