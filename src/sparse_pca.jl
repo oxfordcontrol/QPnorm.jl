@@ -21,7 +21,7 @@ mutable struct Data{T, Tf}
     W::Matrix{T} # Linear orthogonality constraints
     gamma::T
 
-    H_nonzero::FlexibleHessian{T, Tf} # Flexible hessian
+    H::FlexibleHessian{T, Tf} # Flexible hessian
     L::Matrix{T} # Matrix containing a subset of 
     F::LinearAlgebra.QRPivoted{T,Matrix{T}} # QR factorization of the linear equality constraints
     R::Matrix{T}
@@ -77,6 +77,7 @@ mutable struct Data{T, Tf}
             x_init /= max(norm(x_init, 1)/gamma, norm(x_init, 2)) 
         end
         @assert norm(x_init) - 1 <= 1e-9
+        @assert all(x_init .>= -1e-9) "Initial vector must be non-negative"
         gamma_active = (sum(x_init) .>= gamma - 1e-9)
         x_nonzero = x_init[nonzero_indices];
         if gamma_active
@@ -111,7 +112,7 @@ function remove_constraint!(data, idx::Int)
     if idx > 0
         constraint_idx = data.zero_indices[idx]
         append!(data.nonzero_indices, constraint_idx)
-        add_column!(data.H_nonzero, constraint_idx)
+        add_column!(data.H, constraint_idx)
         deleteat!(data.zero_indices, idx)
     end
     update_factorizations!(data)
@@ -123,7 +124,7 @@ function add_constraint!(data, idx::Int)
         # print(" | ", constraint_idx, " | ")
         deleteat!(data.nonzero_indices, idx)
         append!(data.zero_indices, constraint_idx)
-        remove_column!(data.H_nonzero, idx)
+        remove_column!(data.H, idx)
     else
         data.gamma_active = true
     end
@@ -152,7 +153,7 @@ function solve_sparse_pca(S, gamma::T, y_init::Vector{T}, H=nothing; max_iter=In
     end
 
     data.verbosity > 0 && println("2-norm lagrange multiplier: ", data.μ)
-    data.verbosity > 0 && println("Complementarity: ", dot(data.x[1:size(S, 1)], data.x[size(S, 1)+1:end]))
+    # data.verbosity > 0 && println("Complementarity: ", dot(data.x[1:size(S, 1)], data.x[size(S, 1)+1:end]))
 
     return data
 end
@@ -194,7 +195,7 @@ function iterate!(data::Data{T}) where{T}
     data.iteration += 1
 
     # data.x[data.zero_indices] .= 0
-    # @show dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2
+    # @show dot(data.x_nonzero, data.H.H_small*data.x_nonzero)/2
     if norm(data.x_nonzero) <= 1 - 1e-9
         iterate_interior!(data)
         data.x_nonzero = data.x[data.nonzero_indices]
@@ -213,10 +214,10 @@ function iterate!(data::Data{T}) where{T}
     projection! = x -> project!(data, x)
     # @assert maximum(data.A*data.x - data.b) <= 1e-8
     if isnan(new_constraint)
-        t_trs = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12)
+        t_trs = @elapsed Xmin, info = trs_boundary(data.H.H_small, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12)
         t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
         if isnan(new_constraint) && !is_minimizer
-            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H_nonzero.H, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12, compute_local=true)
+            t_trs_l = @elapsed Xmin, info = trs_boundary(data.H.H_small, zeros(T, length(data.x_nonzero)), one(T), projection!, data.x_nonzero, zero(T), tol=1e-12, compute_local=true)
             t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Xmin, info)
             if isnan(new_constraint) && !is_minimizer
                 t_grad += @elapsed new_constraint = gradient_steps(data)
@@ -254,8 +255,8 @@ end
 function check_kkt!(data)
     residual_grad = grad(data, data.x_nonzero) + data.μ*data.x_nonzero
     l = data.F\(-residual_grad)
-    # show(stdout, "text/plain", data.H_nonzero.H); println();
-    # @show eigvals(data.H_nonzero.H), data.μ, l
+    # show(stdout, "text/plain", data.H.H_small); println();
+    # @show eigvals(data.H.H_small), data.μ, l
     data.κ = l[1:end-1]
     data.ν = l[end]
     # println("residual grad norm in nonzeros: ", norm(residual_grad + data.L*l)) # This should be ~zero
@@ -263,28 +264,18 @@ function check_kkt!(data)
     ###
     # This is trying to guess a constraint with negative lagrange multiplier
     # based on the lagrange multipliers of the previous iterations
-    n = Int(length(data.x)/2);
-    cancelling_terms = data.μ*data.x .+ data.ν + data.W*data.κ
-    if length(data.sorted_indices) > 0
-        for i = 1:min(length(data.sorted_indices), 5)
-            idx = data.sorted_indices[i]
-            w = sparse(data.x[1:n] - data.x[n+1:end])
-            Dw = Vector(data.S.D*w) .- dot(data.S.μ, w)
-            if idx <= n
-                value = -(dot(Dw, data.S.D[:, idx]) - sum(Dw)*data.S.μ[idx])
-            else
-                value = dot(Dw, data.S.D[:, idx - n]) - sum(Dw)*data.S.μ[idx - n]
-            end
-            if value + cancelling_terms[idx] < 0
-                removal_idx = findfirst(data.zero_indices .== data.sorted_indices[i])
-                deleteat!(data.sorted_indices, i)
-                data.residual = -Inf
-                return removal_idx
-            end
+    for i = 1:min(length(data.sorted_indices), 5)
+        idx = data.sorted_indices[i]
+        λ_i = indexed_dot(data.H, sparse(data.x), idx) + data.μ*data.x[idx] + data.ν + dot(data.W[idx, :], data.κ)
+        if λ_i < 0
+            removal_idx = findfirst(data.zero_indices .== data.sorted_indices[i])
+            deleteat!(data.sorted_indices, i)
+            data.residual = -Inf
+            return removal_idx
         end
     end
     ###
-    gradient = -sparse_mul(data.S, data.x)
+    gradient = data.H*sparse(data.x)
     # n = Int(length(data.x)/2); Sx_ = data.S*(data.x[1:n] - data.x[n+1:end])
     # println("error in gradient calculation:", norm([-Sx_; Sx_] - gradient)) # This should be ~zero
     residual_grad = gradient + data.μ*data.x .+ data.ν + data.W*data.κ
@@ -392,7 +383,7 @@ function curvature_step(data, x_global::Vector{T}, info) where T
     shift = T(100) # Shift the eigenproblem so that it is easier to solve
     function custom_mul!(y::AbstractVector, x::AbstractVector)
         x .= project_full(data, x)[1]
-        mul!(y, data.H_nonzero.H, x)
+        mul!(y, data.H.H_small, x)
         axpy!(data.μ - shift, x, y)
         y .= project_full(data, y)[1]
     end
@@ -506,11 +497,11 @@ function minimize_2d(data, d1, d2)
     # Calculate 2d cost matrix [P11 P12
     #                           P12 P22]
     # and vector [q1; q2]
-    Pd1 = data.H_nonzero.H*d1
+    Pd1 = data.H.H_small*d1
     P11 = dot(d1, Pd1)
     q1 = dot(Pd1, z) # + dot(d1, data.q) 
 
-    Pd2 = data.H_nonzero.H*d2
+    Pd2 = data.H.H_small*d2
     P22 = dot(d2, Pd2)
     P12 = dot(d1, Pd2)
     q2 = dot(Pd2, z) # + dot(d2, data.q)
@@ -563,11 +554,11 @@ function isfeasible(data::Data{T}, x) where{T}
 end
 
 function f(data::Data{T}, x) where{T}
-    return dot(x, data.H_nonzero.H*x)/2
+    return dot(x, data.H.H_small*x)/2
 end
 
 function grad(data::Data{T}, x) where{T}
-    return data.H_nonzero.H*x
+    return data.H.H_small*x
 end
 
 function project(data, x)

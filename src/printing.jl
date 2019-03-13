@@ -5,11 +5,9 @@ function print_header(data::Data{T}) where T
 end
 
 function print_info(data::Data{T}) where T
-    n = Int(length(data.x)/2)
-    # x_ = data.x[1:n] - data.x[n+1:end]
     @printf("%d \t  %.5e \t %.5e \t %.5e \t %s \t %d/%d \t %c \t %d\n",
         data.iteration,
-        -dot(data.x_nonzero, data.H_nonzero.H*data.x_nonzero)/2, # -dot(x_, data.S*x_)/2,
+        -dot(data.x_nonzero, data.H.H_small*data.x_nonzero)/2, # -dot(x_, data.S*x_)/2,
         max(-minimum(data.x_nonzero), sum(data.x_nonzero) - data.gamma, maximum(abs.(data.L'*(data.x_nonzero-data.x0)))),
         max(norm(data.x_nonzero) - 1, 0),
         isnan(data.residual) ? string(@sprintf("%.5e", data.residual), "   ") : @sprintf("%.5e", data.residual),

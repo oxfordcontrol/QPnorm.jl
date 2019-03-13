@@ -103,7 +103,7 @@ end
 
 mutable struct FlexibleHessian{T, Tf}
     S::Tf
-    H::Symmetric{T, SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int},UnitRange{Int}}, false}}
+    H_small::Symmetric{T, SubArray{T, 2, Matrix{T}, Tuple{UnitRange{Int},UnitRange{Int}}, false}}
     data::Matrix{T}  # That's where P is viewing into
     indices::Vector{Int}
 
@@ -112,10 +112,36 @@ mutable struct FlexibleHessian{T, Tf}
         T = Float64 #typeof(getindex(S, 1, 1))
         data = zeros(T, 2*m, 2*m)
         unwrapped_indices = mod.(indices .- 1, size(S, 1)) .+ 1
-        H = view(data, 1:m, 1:m)
-        H .= -getindex(S, unwrapped_indices, unwrapped_indices)
-        unwrap!(H, size(S, 1), indices, indices)
-        new{T, Tf}(S, Symmetric(H), data, copy(indices))
+        H_small = view(data, 1:m, 1:m)
+        H_small .= -getindex(S, unwrapped_indices, unwrapped_indices)
+        unwrap!(H_small, size(S, 1), indices, indices)
+        new{T, Tf}(S, Symmetric(H_small), data, copy(indices))
+    end
+end
+
+function Base.:(*)(H::FlexibleHessian{T, Tf}, x::AbstractVector{T}) where {T, Tf}
+    n = size(H.S, 1)
+    if length(x) == n
+        return -(H.S*x)
+    elseif length(x) == 2*n
+        w = x[1:n] - x[n+1:end]
+        Sw = H.S*w
+        return [-Sw; Sw]
+    else
+        Throw(DimensionMismatch)
+    end
+end
+
+function indexed_dot(H::FlexibleHessian{T, Tf}, x::AbstractVector{T}, idx::Int) where {T, Tf}
+    n = size(H.S, 1)
+    if length(x) > n
+        x = x[1:n] - x[n+1:end]
+    end
+
+    if idx <= n
+        return -indexed_dot(H.S, x, idx)
+    else
+        return indexed_dot(H.S, x, idx - n)
     end
 end
 
@@ -135,7 +161,7 @@ function add_column!(FP::FlexibleHessian{T, Tf}, idx::Int) where {T, Tf}
     FP.data[1:m+1, m+1:m+1] = -getindex(FP.S, unwrapped_indices, [mod(idx - 1, n) + 1])
     unwrap!(view(FP.data, 1:m+1, m+1), n, FP.indices, [idx])
 
-    FP.H = Symmetric(view(FP.data, 1:m+1, 1:m+1))
+    FP.H_small = Symmetric(view(FP.data, 1:m+1, 1:m+1))
     # W = [FP.P_full -FP.P_full; -FP.P_full FP.P_full]
     # show(stdout, "text/plain", W[FP.indices, FP.indices]); println()
     # show(stdout, "text/plain", FP.P); println()
@@ -150,7 +176,7 @@ function remove_column!(FP::FlexibleHessian{T, Tf}, position::Int) where {T, Tf}
         FP.data[i, j] = FP.data[i+1, j+1]
     end
     deleteat!(FP.indices, position)
-    FP.H = Symmetric(view(FP.data, 1:m-1, 1:m-1))
+    FP.H_small = Symmetric(view(FP.data, 1:m-1, 1:m-1))
 end
 
 struct CovarianceMatrix{T}
@@ -164,18 +190,29 @@ struct CovarianceMatrix{T}
     function CovarianceMatrix(D::T, L_deflate=zeros(0), R_deflate=zeros(0)) where {T}
         # @assert all(abs.(mean(D, dims=1)) .<= 1e-9) "Please make sure the dataset has zero mean observations"
         if length(L_deflate) == 0 || length(R_deflate) == 0
-            L_deflate = zeros(Float64, size(D, 2), 1)
-            R_deflate = zeros(Float64, size(D, 2), 1)
+            L_deflate = zeros(Float64, size(D, 2), 0)
+            R_deflate = zeros(Float64, size(D, 2), 0)
         end
         new{T}(D, reshape(mean(D, dims=1), size(D, 2)), L_deflate, R_deflate)
     end
 end
 
 function Base.:(*)(S::CovarianceMatrix{T}, x::AbstractVector{Tf}) where {T, Tf}
-    y = Vector(S.D*x .- dot(S.μ, x))
-    y = S.D'*y - sum(y)*S.μ
+    Dx = Vector(S.D*x .- dot(S.μ, x))
+    y = S.D'*Dx - sum(Dx)*S.μ
     for k = 1:size(S.L_deflate, 2)
-        y .-= (S.L_deflate[:, k:k]*(S.R_deflate[:, k:k]'*x) + S.R_deflate[:, k:k]*(S.L_deflate[:, k:k]'*x))/2
+        y .-= S.L_deflate[:, k]*dot(S.R_deflate[:, k], x)/2
+        y .-= S.R_deflate[:, k]*dot(S.L_deflate[:, k], x)/2
+    end
+    return y
+end
+
+function indexed_dot(S::CovarianceMatrix{T}, x::AbstractVector{Tf}, idx::Int) where {T, Tf}
+    Dx = Vector(S.D*x .- dot(S.μ, x))
+    y = dot(S.D[:, idx], Dx) - sum(Dx)*S.μ[idx]
+    for k = 1:size(S.L_deflate, 2)
+        y -= S.L_deflate[idx, k]*dot(S.R_deflate[:, k:k], x)/2
+        y -= S.R_deflate[idx, k]*dot(S.L_deflate[:, k], x)/2
     end
     return y
 end
@@ -214,32 +251,11 @@ function getindex(S::CovarianceMatrix, i_indices::Vector{Int}, j_indices::Vector
     idx = 1;
     @inbounds for j in j_indices, i in i_indices
         @inbounds for k = 1:size(S.L_deflate, 2)
-            y[idx] -= (S.L_deflate[i, k]*S.R_deflate[j, k] + S.L_deflate[j, k]*S.R_deflate[i, k])/2
+            y[idx] -= S.L_deflate[i, k]*S.R_deflate[j, k]/2
+            y[idx] -= S.L_deflate[j, k]*S.R_deflate[i, k]/2
         end
         idx += 1
     end
 
     return y
-end
-
-function sparse_mul(S::CovarianceMatrix{T}, x::Vector{Tf}) where {T, Tf}
-    n = Int(length(x)/2)
-    w = x[1:n] - x[n+1:end]
-    y = Vector(_sparse_mul(S.D, x) .- dot(S.μ, w))
-    y = S.D'*y - sum(y)*S.μ
-    for k = 1:size(S.L_deflate, 2)
-        y .-= (S.L_deflate[:, k:k]*(S.R_deflate[:, k:k]'*w) + S.R_deflate[:, k:k]*(S.L_deflate[:, k:k]'*w))/2
-    end
-    return [y; -y]
-end
-
-function sparse_mul(S::AbstractMatrix{Tm}, x::Vector{Tv}) where {Tm, Tv}
-    y = _sparse_mul(S, x)
-    return [y; -y]
-end
-
-function _sparse_mul(S::AbstractMatrix{Tm}, x::Vector{Tv}) where {Tm, Tv}
-    n = size(S, 2)
-    sparse_diff = sparse(x[1:n] - x[n+1:end])
-    return S*sparse_diff
 end
