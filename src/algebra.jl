@@ -1,5 +1,4 @@
 using Arpack
-using TRS
 
 function circle_line_intersections(a1::T, a2::T, b::T, r::T) where T
     """
@@ -69,24 +68,15 @@ end
 function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, v0=zeros((0,)), kwargs...) where T
     n = length(q)
     if n < 15
-        return trs_boundary_small(P, q, r; kwargs...)
+        X, info =  trs_boundary_small(Symmetric(P), q, r; kwargs...)
     else
         try
-            return trs_boundary(P, q, r; tol=tol, v0=v0, kwargs...)
+            X, info = trs_boundary(Symmetric(P), q, r; tol=tol, v0=v0, kwargs...)
         catch e
-            if isa(e, LAPACKException)
-                try
-                    @warn "Error #1:", typeof(e), " - trying again"
-                    return trs_boundary(P, q, r; kwargs...)
-                catch
-                    #    @show e
-                    @warn "Error #2:", e, " - switching to direct"
-                    return trs_boundary_small(P, q, r; kwargs...)
-                end
-            else
-                @warn "Error:", e, " - switching to direct"
-                return trs_boundary_small(P, q, r; kwargs...)
-            end
+            @warn "Error:", e, " - switching to a direct solver"
+            X, info = trs_boundary_small(Symmetric(P), q, r; kwargs...)
         end
     end
+    # @show info, norm(P*X[:,1] + info.λ[1]*X[:, 1] + q)
+    return X, info
 end
