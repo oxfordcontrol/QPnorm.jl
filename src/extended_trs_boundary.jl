@@ -58,6 +58,7 @@ mutable struct Data{T}
     trs_choice::Char
     grad_steps::Int
     eigen_steps::Int
+    timings::DataFrame
 
     function Data(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T},
         r::T, x::Vector{T}; kwargs...) where T
@@ -98,7 +99,13 @@ mutable struct Data{T}
             view(b_shuffled, m-l+1:m),
             A_shuffled, b_shuffled,
             T(tolerance), verbosity, printing_interval,  # Options
-            0, λ, 0, NaN, '-', 0, 0  # Logging
+            0, λ, 0, NaN, '-', 0, 0,  # Logging
+            # Timings
+            DataFrame(projection=zeros(T, 0), gradient_steps=zeros(T, 0),
+            trs=zeros(T, 0), trs_local=zeros(T, 0),
+            move_to_optimizer=zeros(T, 0), move_to_local_optimizer=zeros(T, 0),
+            curvature_step=zeros(T, 0), kkt=zeros(T, 0),
+            add_constraint=zeros(T, 0), remove_constraint=zeros(T, 0))
         )
     end
 end
@@ -124,12 +131,15 @@ function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, 
 end
 
 function iterate!(data::Data{T}) where{T}
+    t_remove, t_add, t_proj, t_grad, t_kkt = zero(T), zero(T), zero(T), zero(T), zero(T)
+    t_trs, t_move, t_trs_l, t_move_l, t_curv = zero(T), zero(T), zero(T), zero(T), zero(T)
+
     if data.removal_idx > 0
-        remove_constraint!(data, data.removal_idx)
+        t_remove = @elapsed remove_constraint!(data, data.removal_idx)
         data.removal_idx = 0
     end
 
-    data.y = data.F.Z'*data.x  # Reduced free variable
+    t_proj = @elapsed data.y = data.F.Z'*data.x  # Reduced free variable
     if norm(data.y) <= 1e-10
         @warn "LICQ failed. Terminating"
         data.done = true
@@ -139,33 +149,42 @@ function iterate!(data::Data{T}) where{T}
     data.Zq = data.F.Z'*(data.q + data.F.P*data.x0) # Reduced q
     data.f0 = dot(data.x0, (data.F.P*data.x0))/2 + dot(data.q, data.x0)
 
-    new_constraint = gradient_steps(data, 5)
+    t_grad = @elapsed new_constraint = gradient_steps(data, 5)
     if isnan(new_constraint) && norm(projected_gradient(data, data.y)) < 1e-9 && length(data.Xmin) > 0
         Ymin = data.F.Z'*data.Xmin # Minimizer of the previous working set
-        new_constraint = curvature_step(data, Ymin[:, 1], false)
+        t_curv += @elapsed new_constraint = curvature_step(data, Ymin[:, 1], false)
     end
 
     if isnan(new_constraint)
-        Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11)
+        t_trs = @elapsed Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11)
         data.Xmin = data.x0 .+ data.F.Z*Ymin;
-        new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+        t_move = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
         if isnan(new_constraint) && !is_minimizer
-            Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11, compute_local=true)
-            new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
+            t_trs_l = @elapsed Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11, compute_local=true)
+            t_move_l = @elapsed new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
             if isnan(new_constraint) && !is_minimizer
-                new_constraint = gradient_steps(data)
+                t_grad += @elapsed new_constraint = gradient_steps(data)
                 if isnan(new_constraint)
-                    new_constraint = curvature_step(data, Ymin[:, 1])
+                    t_curv += @elapsed new_constraint = curvature_step(data, Ymin[:, 1])
                 end
             end
         end
     end
     data.x = data.x0 + data.F.Z*data.y;
     if !isnan(new_constraint)
-        add_constraint!(data, new_constraint)
+        t_add = @elapsed add_constraint!(data, new_constraint)
     end
     if isnan(new_constraint) || data.F.m <= 1
-        data.removal_idx = check_kkt!(data)
+        t_kkt = @elapsed data.removal_idx = check_kkt!(data)
+    end
+
+    if data.done && data.verbosity >= 2
+        push!(data.timings, [t_proj, t_grad, t_trs, t_trs_l, t_move, t_move_l, t_curv, t_kkt, t_add, t_remove])
+        data.timings |> CSV.write(string("timings.csv"))
+        sums =  [sum(data.timings[i]) for i in 1 : size(data.timings, 2)]
+        labels =  names(data.timings)
+        show(stdout, "text/plain", [labels sums]); println()
+        @printf "Total time (excluding factorizations): %.4e seconds.\n" sum(sums[1:end-2])
     end
     data.iteration += 1
 end
@@ -283,10 +302,17 @@ function curvature_step(data, y_global, warning=true)
     return new_constraint
 end
 
+function find_violations!(violating_constraints::Vector{Bool}, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x::T, y::T, tol::T) where{T}
+    n = length(a1)
+    @inbounds for i = 1:n
+        violating_constraints[i] = x*a1[i] + y*a2[i] - b[i] >= tol
+    end
+    return violating_constraints
+end
+
 function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
     grad = P*[x0; y0] + q
     flip = false
-    # @show angle(x0, y0, grad[1], grad[2])
     if angle(x0, y0, grad[1], grad[2]) < pi
         flip = true
         # Flip y axis, thus obtaining dot(grad, [x0, y0]) > 0
@@ -318,23 +344,16 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
         θ = θ0 + δθ
 
         n = length(b)
-        function find_violations!(violating_constraints::Vector{Bool}, θ::T) where{T}
-            x, y = r*cos(θ), r*sin(θ)
-            @inbounds for i = 1:n
-                violating_constraints[i] = x*a1[i] + y*a2[i] - b[i] >= tol
-            end
-            return violating_constraints
-        end
         violating_constraints = Vector{Bool}(undef, n)
 
-        if !any(find_violations!(violating_constraints, θ))
+        if !any(find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol))
             x, y = r*cos(θ), r*sin(θ)
         else
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
             θ_low = θ0; θ_high = θ
             # Binary Search
-            for i = 1:100
-                find_violations!(violating_constraints, θ)
+            for i = 1:30
+                find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol)
                 if any(violating_constraints) || f_2d(r*cos(θ), r*sin(θ)) > f_2d(x0, y0)
                     θ_high = θ
                     new_constraint = findlast(violating_constraints)
@@ -376,11 +395,11 @@ function minimize_2d(data, d1, d2)
     # Calculate 2d cost matrix [P11 P12
     #                           P12 P22]
     # and vector [q1; q2]
-    Pd1 = data.F.ZPZ*d1
+    Pd1 = Symmetric(data.F.ZPZ)*d1
     P11 = dot(d1, Pd1)
     q1 = dot(d1, data.Zq) + dot(Pd1, z)
 
-    Pd2 = data.F.ZPZ*d2
+    Pd2 = Symmetric(data.F.ZPZ)*d2
     P22 = dot(d2, Pd2)
     P12 = dot(d1, Pd2)
     q2 = dot(d2, data.Zq) + dot(Pd2, z)
