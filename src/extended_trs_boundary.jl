@@ -141,7 +141,7 @@ function iterate!(data::Data{T}) where{T}
 
     new_constraint = gradient_steps(data, 5)
     if isnan(new_constraint) && norm(projected_gradient(data, data.y)) < 1e-9 && length(data.Xmin) > 0
-        Ymin = data.F.Z'*data.Xmin # Minimizers of the previous working set
+        Ymin = data.F.Z'*data.Xmin # Minimizer of the previous working set
         new_constraint = curvature_step(data, Ymin[:, 1], false)
     end
 
@@ -151,7 +151,6 @@ function iterate!(data::Data{T}) where{T}
         new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
         if isnan(new_constraint) && !is_minimizer
             Ymin, info = trs_robust(data.F.ZPZ, data.Zq, norm(data.y), tol=1e-11, compute_local=true)
-            data.Xmin = data.x0 .+ data.F.Z*Ymin;
             new_constraint, is_minimizer = move_towards_optimizers!(data, Ymin)
             if isnan(new_constraint) && !is_minimizer
                 new_constraint = gradient_steps(data)
