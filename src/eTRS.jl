@@ -6,7 +6,6 @@ using LinearAlgebra
 using Polynomials
 using GeneralQP
 using TRS
-using Main.eTRS.TRS
 using DataFrames
 using Printf
 using CSV
