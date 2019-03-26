@@ -17,6 +17,11 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
 
     while !data.done && data.iteration <= max_iter
         iterate!(data)
+        if isa(data, Data) && data.done && data.μ < -1e-8
+            # Don't terminate if the Lagrange multiplier of the spherical constraint is negative
+            data.done = false
+        end
+
         if data.verbosity > 0
             mod(data.iteration, 10*data.printing_interval) == 0 && print_header(data)
             (mod(data.iteration, data.printing_interval) == 0 || data.done) && print_info(data)
@@ -36,7 +41,12 @@ function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
             data = interior_data
         end
     end
-    return data.x
+
+    if isa(data, Data)
+        return data.x, [data.λ; data.μ]
+    else
+        return data.x, [data.λ; zero(T)]
+    end
 end
 
 function create_data(P, q, A, b, r, x_init; kwargs...)
