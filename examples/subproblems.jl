@@ -37,20 +37,3 @@ function optimize_radius(A, b, r; minimize=true)
 	status = JuMP.solve(model)
 	return getvalue(x)
 end
-
-function solve_ipopt(P, q, A, b, r, x_init)
-	n = size(P, 1)
-	model = JuMP.Model()
-	setsolver(model, IpoptSolver(max_iter=2000))#, print_level=0))
-	@variable(model, x[1:n])
-	for i in 1:n
-		setvalue(x[i], x_init[i]);
-	end
-    @objective(model, Min, 0.5*dot(x, P*x) + dot(q,x))
-    @constraint(model, A*x .<= b)
-    @constraint(model, dot(x, x) <= r^2)
-	status = JuMP.solve(model)
-	# @assert status == :Optimal status
-	objective = JuMP.getobjectivevalue(model)
-	return getvalue(x)
-end
