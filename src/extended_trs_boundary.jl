@@ -224,9 +224,7 @@ function move_towards_optimizers!(data, Y, flag=true)
         data.trs_choice = 'g'
         return NaN, true
     end
-    if how_many == 0
-        return NaN
-    elseif how_many == 1
+    if how_many == 1
         data.trs_choice = 'm'
         d1 = data.y
         d2 = data.y - Y[:, 1];
@@ -289,16 +287,21 @@ function curvature_step(data, y_global, warning=true)
         warning && @warn "Search for negative curvature failed; we assume that we are in a local minimum"
         return NaN
     end
-    if λ_min >= 0
+    if λ_min >= -1e-8
         warning && @warn "We ended up in an unexpected TRS local minimum. Perhaps the problem is badly scaled." λ_min
         return NaN
     end
     d1 = project!(v_min)
     d2 = y_global - data.y
     D = qr([d1 d2]).Q
-    new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
 
-    # warning && @assert !isnan(new_constraint)
+    y_copy = copy(data.y)
+    new_constraint = minimize_2d(data, D[:, 1], D[:, 2], false)
+    if isnan(new_constraint)
+        data.y = y_copy
+        new_constraint = minimize_2d(data, D[:, 1], -D[:, 2], false)
+        warning && isnan(new_constraint) && @warn "Could not activate a new constraint; checking KKT conditions on a saddle point."
+    end
     return new_constraint
 end
 
@@ -310,10 +313,13 @@ function find_violations!(violating_constraints::Vector{Bool}, a1::Vector{T}, a2
     return violating_constraints
 end
 
-function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T) where {T}
+function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T,
+    a1::Vector{T}, a2::Vector{T}, b::Vector{T}, x0::T, y0::T,
+    allow_flip=true) where {T}
+
     grad = P*[x0; y0] + q
     flip = false
-    if angle(x0, y0, grad[1], grad[2]) < pi
+    if angle(x0, y0, grad[1], grad[2]) < pi && allow_flip
         flip = true
         # Flip y axis, thus obtaining dot(grad, [x0, y0]) > 0
         y0 = -y0
@@ -352,7 +358,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
             f_2d(x, y) = dot([x; y], P*[x; y])/2 + dot([x; y], q)
             θ_low = θ0; θ_high = θ
             # Binary Search
-            for i = 1:30
+            for i = 1:80
                 find_violations!(violating_constraints, a1, a2, b, r*cos(θ), r*sin(θ), tol)
                 if any(violating_constraints) || f_2d(r*cos(θ), r*sin(θ)) > f_2d(x0, y0)
                     θ_high = θ
@@ -378,6 +384,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
                     x, y = x2, y2
                 else
                     x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
+                    new_constraint = NaN
                 end
             end
         end
@@ -387,7 +394,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T, a1::Vector{T}, a2::Vecto
     return x, y, new_constraint
 end
 
-function minimize_2d(data, d1, d2)
+function minimize_2d(data, d1, d2, allow_flip=true)
     x0 = dot(data.y, d1); y0 = dot(data.y, d2)
     z = data.y - d1*x0 - d2*y0
     r = sqrt(x0^2 + y0^2)
@@ -413,7 +420,7 @@ function minimize_2d(data, d1, d2)
     idx = a1.^2 + a2.^2 .<= 1e-18
     a1[idx] .= 1; a2[idx] .= 0; b[idx] .= 2*r
 
-    x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0)
+    x, y, new_constraint = _minimize_2d(P, q, r, a1, a2, b, x0, y0, allow_flip)
     @. data.y = z + x*d1 + y*d2
 
     return new_constraint
