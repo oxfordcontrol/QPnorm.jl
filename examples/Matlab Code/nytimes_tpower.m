@@ -5,7 +5,7 @@ D = D./max(max(D));
 means = mean(D, 1)';
 
 x = zeros(0);
-nz = 50; % Desired nonzeros
+nz = 30; % Desired nonzeros
 % init_type = "default_tpower";
 init_type = "truncutated_eigenvector";
 
@@ -43,10 +43,13 @@ for k = 1:1 % Number of sparse principal vectors desired
     end
     
     % x0 = randn(size(D, 2), 1);
-    z = TPower(S, options, x0);
+    tic; z = TPower(S, options, x0); toc;
     indices = find(abs(z(:)) > 1e-7);
-    % Print resulting vocabulary
-    [vocabulary(indices, 1) table(z(indices))]
+    % Print resulting sorted vocabulary
+    words = vocabulary(indices, 1);
+    values = z(indices);
+    [~, I] = sort(-abs(values));
+    [words(I, 1) table(values(I))]
 
     y = A(z);
     l_deflate = [l_deflate y];

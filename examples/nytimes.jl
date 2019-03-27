@@ -11,7 +11,7 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
     results = DataFrame()
     for i = 1:k
         S = eTRS.CovarianceMatrix(D, L_deflate, R_deflate)
-        x, data = eTRS.binary_search_nonnegative(S, nonzeros)
+        x, data = eTRS.binary_search(S, nonzeros)
         nonzero_indices = findall(abs.(x) .> 1e-8)
         permutation = sortperm(-abs.(x[nonzero_indices]))
         results[Symbol("Words_", i)] = vocabulary[:Column1][nonzero_indices[permutation]]
@@ -29,7 +29,7 @@ end
 # D = convert(SparseMatrixCSC{Int64,Int64}, D)
 D = D./maximum(D);
 vocabulary = CSV.File("vocab.nytimes.txt", header=0, datarow=1) |> DataFrame
-@time results = generate_principal_vectors(D, vocabulary, 50, 1)
+@time results = generate_principal_vectors(D, vocabulary, 30, 1)
 println("Presss enter for next run..."); readline(stdin)
-@time results = generate_principal_vectors(D, vocabulary, 50, 1)
+@time results = generate_principal_vectors(D, vocabulary, 30, 1)
 nothing

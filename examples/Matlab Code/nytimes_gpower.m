@@ -7,8 +7,6 @@ means = mean(D, 1)';
 x = zeros(0);
 nz = 50; % Desired nonzeros
 
-tic;
-
 l_deflate = zeros(size(D, 1), 0);
 r_deflate = zeros(size(D, 2), 0);
 for k = 1:1 % Number of sparse principal vectors desired
@@ -17,21 +15,21 @@ for k = 1:1 % Number of sparse principal vectors desired
     At = @(x) mul_t(D, means, l_deflate, r_deflate, x);
     S = @(x) At(full(A(x)));
     % Get initial point
-    % [x, rho_max] = get_initial_point(D, means, l_deflate, r_deflate);
+    [x, rho_max] = get_initial_point(D, means, l_deflate, r_deflate);
     %%%% Truncated Eigenvector start %%%%
-    [x, l] = eigs(S, size(D, 2), 1, 'lr', 'tol', 1e-6);
-    x = (D*x); x = x/norm(x);
-    rho_max = 500;
+    % [x, l] = eigs(S, size(D, 2), 1, 'lr', 'tol', 1e-6);
+    % x = (D*x); x = x/norm(x);
+    % rho_max = 500;
     %%%% Dummy start %%%%
     % x = randn(size(D, 1), 1); rho_max = 500; % Dummy start
     
+    tic;
     high = 0.2;
     low = 0.00001;
     for i = 1:50 % Maximum iterations of binary search
         gamma = (high - low)/2 + low;
         
         rho=gamma*rho_max;
-        tic;
         x=GPower(A, At, x, rho);
         Ax=At(x);
         pattern=((abs(Ax)-rho) >0); % pattern of sparsity
@@ -43,7 +41,6 @@ for k = 1:1 % Number of sparse principal vectors desired
         A_red = @(x) mul(D_red, means(pattern), l_deflate, r_deflate(pattern, :), x);
         At_red = @(x) mul_t(D_red, means(pattern), l_deflate, r_deflate(pattern, :), x);
         z=pattern_filling(A_red, At_red, pattern, z); % assign values to the nonzero elements
-        toc;
         
         nonzeros = nnz(z)
         gamma
@@ -61,9 +58,13 @@ for k = 1:1 % Number of sparse principal vectors desired
     r_deflate = [r_deflate z];
     
     indices = find(abs(z(:)) > 1e-7);
-    [vocabulary(indices, 1) table(z(indices))]
+    % Print resulting sorted vocabulary
+    words = vocabulary(indices, 1);
+    values = z(indices);
+    [~, I] = sort(-abs(values));
+    [words(I, 1) table(values(I))]
+    toc;
 end
-toc;
 
 
 function y = mul(A, mu, l_deflate, r_deflate, x)
