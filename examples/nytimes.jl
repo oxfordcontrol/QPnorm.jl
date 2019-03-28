@@ -1,5 +1,6 @@
 using JLD2
 using SparseArrays
+using LinearAlgebra
 include("../src/eTRS.jl")
 using Main.eTRS
 using CSV
@@ -25,11 +26,12 @@ function generate_principal_vectors(D, vocabulary, nonzeros, k)
     end
     return results
 end
-@load "docword_nytimes.jld2" D
+include("docword_to_sparse_matrix.jl")
+# @load "docword_nytimes.jld2" D
 # D = convert(SparseMatrixCSC{Int64,Int64}, D)
 D = D./maximum(D);
 vocabulary = CSV.File("vocab.nytimes.txt", header=0, datarow=1) |> DataFrame
-@time results = generate_principal_vectors(D, vocabulary, 30, 1)
+@time results = generate_principal_vectors(D, vocabulary, 50, 1)
 println("Presss enter for next run..."); readline(stdin)
-@time results = generate_principal_vectors(D, vocabulary, 30, 1)
+@time results = generate_principal_vectors(D, vocabulary, 50, 1)
 nothing

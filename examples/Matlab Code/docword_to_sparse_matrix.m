@@ -1,4 +1,4 @@
-load docword.nytimes.txt
-D = spconvert(docword_nytimes);
-clear docword_nytimes;
+M = dlmread('../docword.nytimes.txt', ' ', 3, 0);
+D = spconvert(M);
+clear M;
 save docword_nytimes.mat

@@ -1,5 +1,5 @@
 load docword_nytimes.mat
-vocabulary = readtable("vocab.nytimes.txt");
+vocabulary = readtable("../vocab.nytimes.txt");
 
 D = D./max(max(D));
 means = mean(D, 1)';
@@ -53,6 +53,7 @@ for k = 1:1 % Number of sparse principal vectors desired
             high = gamma;
         end
     end
+    toc;
     y = A(z);
     l_deflate = [l_deflate y];
     r_deflate = [r_deflate z];
@@ -63,7 +64,6 @@ for k = 1:1 % Number of sparse principal vectors desired
     values = z(indices);
     [~, I] = sort(-abs(values));
     [words(I, 1) table(values(I))]
-    toc;
 end
 
 

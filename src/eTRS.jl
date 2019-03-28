@@ -4,8 +4,7 @@ module eTRS
 
 using LinearAlgebra, SparseArrays
 using Polynomials
-include("/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/TRS.jl/src/TRS.jl")
-using Main.eTRS.TRS
+using TRS
 using SparseArrays
 using BenchmarkTools
 # using Profile, ProfileView
