@@ -3,6 +3,7 @@ using BenchmarkTools
 using JLD2, FileIO
 using JuMP
 using Glob
+using SparseArrays
 include("../src/eTRS.jl")
 include("./subproblems.jl")
 include("./solve_ipopt.jl")
@@ -11,7 +12,7 @@ using DataFrames
 using CSV
 
 working_dir = pwd()
-path = "/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/CUTEst.jl/data/MASTSIF/"
+path = "./data/"
 cd(path)
 files = glob("*.jld2")
 cd(working_dir)
@@ -20,7 +21,12 @@ function compute_metrics(P, q, A, b, r, x, λ) #, inactive_set)
     m, n = size(A)
     grad_residual = norm(P*x + q + A'*λ[1:end-1] + λ[end]*x, Inf)
     active_set = λ .>= 1e-8
-    V = nullspace([A; x'][active_set, :])
+    A_active = [A; x'][active_set, :]
+    if length(A_active) > 0
+        V = nullspace([A; x'][active_set, :])
+    else
+        V = diagm(0 => ones(n))
+    end
     # Q = qr([A' x][:, inactive_set]).Q*Matrix(I, n, n)
     # V = Q[:, sum(inactive_set)+1:end]
     if length(V) > 0
@@ -84,6 +90,7 @@ for file in files[1:end]
 
     x = Float64[]; f = NaN; infeasibility = NaN; t = NaN
     grad_residual = NaN; min_eig = NaN; multipliers = Float64[];
+    complementarity = NaN; dual_infeasibility = NaN
     P = Matrix(P); A = Matrix(A)
     try
         t = @elapsed x, multipliers = eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
