@@ -77,6 +77,6 @@ function trs_robust(P::AbstractArray{T}, q::AbstractVector{T}, r::T; tol=0.0, v0
             X, info = trs_boundary_small(Symmetric(P), q, r; kwargs...)
         end
     end
-    # @show info, norm(P*X[:,1] + info.λ[1]*X[:, 1] + q)
+    # @show info, norm(P*X[:,1] + info.λ[1]*C*X[:, 1] + q)
     return X, info
 end

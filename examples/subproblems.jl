@@ -1,39 +1,32 @@
-using JuMP, Ipopt, Polynomials
+using JuMP, Gurobi, GeneralQP
 
-function find_feasible_point(A, b, r)
+function find_feasible_point(A::Matrix{T}, b::Vector{T}, r::T) where T
 	# Attempts to solve the feasibility problem
-	# Ax <= b
-	# ||x|| = r
+	# find       x
+	# such that  Ax ≤ b
+	#            ‖x‖ = r
+
+	# First use Gurobi to find the solution x_min of
+	# minimize     x'x
+	# subject to   Ax ≤ b
 	m, n = size(A)
-	x_min = optimize_radius(A, b, r; minimize=true)
+	model = Model(with_optimizer(Gurobi.Optimizer))
+    @variable(model, x[1:n])
+    @objective(model, Min, dot(x, x))
+	@constraint(model, A*x .<= b)
+	optimize!(model)
+    x_min = value.(x)
+	# Check that x_min is feasible and ‖x‖ ≤ r
 	@assert norm(x_min) <= r string("The problem is infeasible. Min radius:", norm(x_min))
-	@assert maximum(A*x_min - b) <= 0 string("Min-radius solution returned by IPOPT violates constraints by:", maximum(A*x_min - b))
-	x_max = optimize_radius(A, b, r; minimize=false)
-	@assert norm(x_max) >= r string("Could not find a feasible point. Max radius:", norm(x_max))
-	@assert maximum(A*x_max - b) <= 0 string("Max-radius solution returned by IPOPT violates constraints by:", maximum(A*x_max - b))
+	@assert maximum(A*x_min - b) <= 0 string("Min-radius solution returned by Gurobi violates constraints by:", maximum(A*x_min - b))
 
-	d = x_max - x_min
-	alpha = roots(Poly([norm(x_min)^2 - r^2, 2*d'*x_min, norm(d)^2]))
-	alpha = alpha[alpha .>= 0][1]
-	x = x_min + alpha*d
-	@assert abs(norm(x) - r) <= 1e-9*r
-	@assert maximum(A*x - b) <= 1e-7
+	# Use GeneralQP to find a solution x
+	# maximize     x'x
+	# subject to   Ax ≤ b
+	# that has radius less than or equal to r
+	x = GeneralQP.solve(Matrix(-one(T)*I, n, n), zeros(T, n), A, b, x_min; r_max=r, printing_interval=5000)
+	# Check that ‖x‖ = r and Ax ≤ b
+	@assert abs(norm(x) - r) <= 1e-9 && maximum(A*x - b) <= 1e-9 "Failed to find a feasible point"
+
 	return x
-end
-
-function optimize_radius(A, b, r; minimize=true)
-	n = size(A, 2)
-	model = JuMP.Model()
-    setsolver(model, IpoptSolver(max_iter=500, bound_relax_factor=0.0, print_level=0))
-	@variable(model, x[1:n])
-	objective = dot(x, x)
-	if !minimize
-		objective = -objective
-	end
-	@objective(model, Min, objective)
-    @constraint(model, A*x - b .<= 0)
-    @constraint(model, x .<= 5*r)
-    @constraint(model, x .>= -5*r)
-	status = JuMP.solve(model)
-	return getvalue(x)
 end

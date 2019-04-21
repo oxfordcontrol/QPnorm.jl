@@ -72,7 +72,7 @@ function solve_ipopt(P::AbstractMatrix, q, A::AbstractMatrix, b,
     timing = @elapsed status = solveProblem(prob)
     # println(Ipopt.ApplicationReturnStatus[status])
     # println(prob.obj_val)
-    prob.mult_g[end] /= 2
+    prob.mult_g[end] *= 2
     return prob.x, prob.mult_g, timing
 end
 

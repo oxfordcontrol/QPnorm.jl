@@ -1,33 +1,30 @@
-using LinearAlgebra, Random
-using BenchmarkTools
-using JLD2, FileIO
-using JuMP
-using Glob
+include("../src/eTRS.jl")
 include("./subproblems.jl")
 include("./solve_ipopt.jl")
+using Main.eTRS
+using Random
 using DataFrames
 using CSV
+using JLD2, FileIO
 
-working_dir = pwd()
-path = "/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/CUTEst.jl/data/MASTSIF/"
-cd(path)
-files = glob("*.jld2")
-cd(working_dir)
+rng = MersenneTwister(123)
 
-function compute_metrics(P, q, A, b, r, x, λ)
+function compute_metrics(P::Matrix{T}, q::Vector{T},
+    A::Matrix{T}, b::Vector{T}, r::T,
+    x::Vector{T}, λ::Vector{T}) where {T}
+
     m, n = size(A)
 
     f = dot(x, P*x)/2 + dot(x, q)
 
     grad_residual = norm(P*x + q + A'*λ[1:end-1] + λ[end]*x, Inf)
-    infeasibility = max(maximum(A*x - b), norm(x)^2 - r^2, 0)
-    complementarity = maximum(minimum([abs.(λ) abs.([A*x - b; norm(x)^2 - r^2])], dims=2))
-    dual_infeasibility = max(-minimum(λ), 0.0)
+    infeasibility = max(maximum(A*x - b), abs(norm(x)^2 - r^2), 0)
+    complementarity = maximum(minimum([abs.(λ[1:end-1]) abs.(A*x - b)], dims=2))
+    dual_infeasibility = max(-minimum(λ[1:end-1]), 0.0)
 
     active_set = λ .>= 1e-8
+    active_set[end] = true # Norm constraint is an equality constraint; thus it should always be included
     V = nullspace([A; x'][active_set, :])
-    # Q = qr([A' x][:, inactive_set]).Q*Matrix(I, n, n)
-    # V = Q[:, sum(inactive_set)+1:end]
     if length(V) > 0
         min_eig = minimum(eigvals(Symmetric(V'*(P + I*λ[end])*V)))
     else
@@ -37,7 +34,7 @@ function compute_metrics(P, q, A, b, r, x, λ)
     return f, grad_residual, infeasibility, dual_infeasibility, complementarity, min_eig
 end
 
-df = DataFrame(name=String[], n = Int[], m = Int[],
+df = DataFrame(n = Int[], m = Int[],
     time = Float64[], time_ipopt = Float64[],
     objective = Float64[], objective_ipopt = Float64[],
     infeasibility = Float64[], infeasibility_ipopt = Float64[],
@@ -47,25 +44,15 @@ df = DataFrame(name=String[], n = Int[], m = Int[],
     min_eig = Float64[], min_eig_ipopt = Float64[]
 )
 
-i = 0
-for file in files[1:end]
-    global i += 1
-    filepath = string(path, file)
-    q = load(filepath, "q")
-    P, q, A, b, x0 = load(filepath, "P", "q", "A", "b", "x0")
-    # We want to solve
-    # minimize    ½x'Px + q'x + f0
-    # subject to  Ax ≤ b
-    #             ‖x - x0‖ = r
-    # We convert the problem to a standard form by a change of variables z = x - x0
-    q = q + P*x0
-    b = b - A*x0
-    # f0 += dot(data.x0, (P*data.x0))/2 + dot(q, x0)
-    x_init = zeros(size(x0))
-    m, n = size(A)
-    @show m, n
-    println("Solving problem #", i, " : ", file[1:end-5], " with norm(x_init)=", norm(x_init))
-    r = 1.0
+for exponent in 2.1:0.1:2.1
+    r = 50.0
+    n = Int(floor(10^exponent))
+    m = Int(floor(1.5*n))
+    P = randn(rng, n, n); P = (P + P')/2
+    q = randn(rng, n)
+    A = randn(rng, m, n); b = randn(rng, m)
+    x_init = find_feasible_point(A, b, r)
+
     x_ipopt = Float64[]; f_ipopt = NaN; infeasibility_ipopt = NaN; t_ipopt = NaN
     grad_residual_ipopt = NaN; min_eig_ipopt = NaN; multipliers_ipopt = Float64[];
     complementarity_ipopt = NaN; dual_infeasibility_ipopt = NaN
@@ -81,17 +68,15 @@ for file in files[1:end]
     x = Float64[]; f = NaN; infeasibility = NaN; t = NaN
     grad_residual = NaN; min_eig = NaN; multipliers = Float64[];
     complementarity = NaN; dual_infeasibility = NaN
-    P = Matrix(P); A = Matrix(A)
     try
-        t = @elapsed x, multipliers = eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
-        t = @elapsed x, multipliers = eTRS.solve(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
-        # inactive_set = multipliers .!== 0.0
+        t = @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
+        t = @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
         f, grad_residual, infeasibility, dual_infeasibility, complementarity, min_eig = compute_metrics(P, q, A, b, r, x, multipliers)
     catch e
         nothing
     end
 
-    push!(df, [file[1:end-5], n, m,
+    push!(df, [n, m,
             t, t_ipopt,
             f, f_ipopt,
             infeasibility, infeasibility_ipopt,
@@ -99,6 +84,6 @@ for file in files[1:end]
             complementarity, complementarity_ipopt,
             grad_residual, grad_residual_ipopt,
             min_eig, min_eig_ipopt])
-    
-    df |> CSV.write(string("results_cutest.csv"))
+
+    df |> CSV.write(string("results_random.csv"))
 end

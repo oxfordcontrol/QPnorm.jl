@@ -5,9 +5,10 @@ module eTRS
 using LinearAlgebra
 using Polynomials
 using GeneralQP
-using TRS
+using TRS 
 using DataFrames
 using Printf
+using SparseArrays
 using CSV
 
 include("algebra.jl")

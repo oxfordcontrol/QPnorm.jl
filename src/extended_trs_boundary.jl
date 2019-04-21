@@ -110,8 +110,8 @@ mutable struct Data{T}
     end
 end
 
-function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, r::T,
-    x::Vector{T}; max_iter=Inf, kwargs...) where T
+function solve_boundary(P::Matrix{Float64}, q::Vector{Float64}, A::Matrix{Float64}, b::Vector{Float64}, r::Float64,
+    x::Vector{Float64}; max_iter=Inf, kwargs...)
     data = Data(P, q, A, b, r, x; kwargs...)
 
     if data.verbosity > 0
@@ -127,7 +127,7 @@ function solve_boundary(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, 
             (mod(data.iteration, data.printing_interval) == 0 || data.done) && print_info(data)
         end
     end
-    return data.x
+    return data.x, [data.λ; data.μ]
 end
 
 function iterate!(data::Data{T}) where{T}
@@ -224,25 +224,25 @@ function move_towards_optimizers!(data, Y, flag=true)
         data.trs_choice = 'g'
         return NaN, true
     end
+
     if how_many == 1
         data.trs_choice = 'm'
         d1 = data.y
         d2 = data.y - Y[:, 1];
-        minimizer_grad = norm(projected_gradient(data, Y[:, 1])[1])
         minimizer_value = f(data, Y[:, 1])
     else
-        data.trs_choice = 'l'
+        data.trs_choice = 'm'
         d1 = data.y - Y[:, 1]
         d2 = data.y - Y[:, 2];
-        minimizer_grad = max(norm(projected_gradient(data, Y[:, 1])[1]), norm(projected_gradient(data, Y[:, 2])[1]))
         minimizer_value = max(f(data, Y[:, 1]), f(data, Y[:, 2])) 
     end
     D = qr([d1 d2]).Q
     new_constraint = minimize_2d(data, D[:, 1], D[:, 2])
-    is_minimizer = ((norm(projected_gradient(data, data.y)[1]) <= 1e-7)
-                && (f(data, data.y) <= minimizer_value + max(abs(minimizer_value)/20, 1e-10)))
-    if isnan(new_constraint) && how_many > 1
-        is_minimizer = true
+    if isnan(new_constraint)
+        is_minimizer = ((norm(projected_gradient(data, data.y)) <= 1e-6)
+                        && (f(data, data.y) <= minimizer_value + max(abs(minimizer_value)/100, 1e-7)))
+    else
+        is_minimizer = false
     end
     
     return new_constraint, is_minimizer
@@ -329,7 +329,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T,
     end
 
     infeasibility(x, y) = maximum(a1*x + a2*y - b)
-    tol = max(1e-12, 1.1*infeasibility(x0, y0))
+    tol = max(1e-12, 1.05*infeasibility(x0, y0))
 
     new_constraint = NaN
     X, info = trs_boundary_small(P, q, r; compute_local=true)
@@ -373,6 +373,7 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T,
                 x, y = r*cos(θ), r*sin(θ)
                 new_constraint = NaN
             else
+                tol = 1.2*tol # Lossen up the tolerance more now that we identified the new constraint
                 x1, y1, x2, y2 = circle_line_intersections(a1[new_constraint], a2[new_constraint], b[new_constraint], r)
                 if infeasibility(x1, y1) <= tol
                     if infeasibility(x2, y2) <= tol && f_2d(x2, y2) <= f_2d(x1, y1)
@@ -384,7 +385,9 @@ function _minimize_2d(P::Matrix{T}, q::Vector{T}, r::T,
                     x, y = x2, y2
                 else
                     x, y = r*cos(θ_low), r*sin(θ_low) # Just in case the circle_line_intersections fails
-                    new_constraint = NaN
+                    if abs(a1[new_constraint]*x + a2[new_constraint]*y - b[new_constraint]) >= tol
+                        new_constraint = NaN
+                    end
                 end
             end
         end

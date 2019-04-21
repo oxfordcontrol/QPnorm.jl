@@ -1,5 +1,5 @@
-include("../src/eTRS.jl")
 include("./subproblems.jl")
+using eTRS
 using Main.eTRS
 using Random
 
