@@ -1,3 +1,4 @@
 garbage/**
 *.csv
+*.jld2
 get_results.sh

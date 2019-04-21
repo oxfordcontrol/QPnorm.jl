@@ -1,3 +1,4 @@
+using LinearAlgebra
 using JuMP, Gurobi, GeneralQP
 
 function find_feasible_point(A::Matrix{T}, b::Vector{T}, r::T) where T
