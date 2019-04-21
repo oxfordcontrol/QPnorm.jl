@@ -3,13 +3,14 @@ using BenchmarkTools
 using JLD2, FileIO
 using JuMP
 using Glob
-include("./subproblems.jl")
-include("./solve_ipopt.jl")
+using SparseArrays
+using eTRS
 using DataFrames
 using CSV
+include("./solve_ipopt.jl")
 
 working_dir = pwd()
-path = "/Users/nrontsis/OneDrive - The University of Oxford/PhD/Code/CUTEst.jl/data/MASTSIF/"
+path = "./data/"
 cd(path)
 files = glob("*.jld2")
 cd(working_dir)
@@ -25,7 +26,12 @@ function compute_metrics(P, q, A, b, r, x, λ)
     dual_infeasibility = max(-minimum(λ), 0.0)
 
     active_set = λ .>= 1e-8
-    V = nullspace([A; x'][active_set, :])
+    A_active = [A; x'][active_set, :]
+    if length(A_active) > 0
+        V = nullspace([A; x'][active_set, :])
+    else
+        V = diagm(0 => ones(n))
+    end
     # Q = qr([A' x][:, inactive_set]).Q*Matrix(I, n, n)
     # V = Q[:, sum(inactive_set)+1:end]
     if length(V) > 0

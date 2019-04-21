@@ -1,4 +1,5 @@
 using Ipopt
+using SparseArrays
 function solve_ipopt(P::AbstractMatrix, q, A::AbstractMatrix, b,
     r_max=Inf, r_min=-Inf, x_init=zeros(0);
     max_iter=5000, print_level=0, bound_relax_factor=NaN)
