@@ -15,7 +15,7 @@ function create_problems()
         P = randn(rng, n, n); P = (P + P')/2
         q = randn(rng, n)
         A = randn(rng, m, n); b = randn(rng, m)
-        x_init = find_feasible_point(A, b, r)
+        x_init = find_feasible_point(A, b, r, r)
 
         @save string("random_data/", counter, ".jld2") P q A b r x_init
         counter += 1
