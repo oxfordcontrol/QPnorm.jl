@@ -1,5 +1,8 @@
 function solve(P::Matrix{T}, q::Vector{T}, A::Matrix{T}, b::Vector{T}, x::Vector{T}; r_min::T=zero(T), r_max::T=T(Inf), max_iter=Inf, kwargs...) where T 
     if r_min < 1e-9; r_min = -one(T); end
+    if abs(r_min - r_max) < 1e-9
+        return solve_boundary(P, q, A, b, (r_min + r_max)/2, x; max_iter=max_iter, kwargs...)
+    end
 
     boundary_data, interior_data = create_data(P, q, A, b, r_min, r_max, x; kwargs...)
 
