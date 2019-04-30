@@ -3,8 +3,6 @@ include("./solve_ipopt.jl")
 using eTRS
 using Random
 using DataFrames, CSV
-using JLD2, FileIO
-using Glob
 
 rng = MersenneTwister(123)
 
@@ -43,19 +41,22 @@ df = DataFrame(n = Int[], m = Int[],
     min_eig = Float64[], min_eig_ipopt = Float64[]
 )
 
-working_dir = pwd()
-path = "./random_data/"
-cd(path); files = glob("*.jld2"); cd(working_dir)
+dimensions = Vector(range(100, 2000, length=10))
+prepend!(dimensions, 10) # Small problem to warm up solvers
+r = 100.0
 
-for file in files
-    P, q, A, b, r, x_init = load(string(path, file), "P", "q", "A", "b", "r", "x_init")
-    m, n = size(A)
+for dimension in dimensions
+    n = Int(floor(dimension))
+    m = Int(floor(1.5*n))
+    P = randn(rng, n, n); P = (P + P')/2
+    q = randn(rng, n)
+    A = randn(rng, m, n); b = randn(rng, m)
 
     x_ipopt = Float64[]; f_ipopt = NaN; infeasibility_ipopt = NaN; t_ipopt = NaN
     grad_residual_ipopt = NaN; min_eig_ipopt = NaN; multipliers_ipopt = Float64[];
     complementarity_ipopt = NaN; dual_infeasibility_ipopt = NaN
     try
-        x_ipopt, multipliers_ipopt, t_ipopt = solve_ipopt(P, q, A, b, r, 0, copy(x_init); print_level=0)
+        x_ipopt, multipliers_ipopt, t_ipopt = solve_ipopt(P, q, A, b, r, r; print_level=0)
         f_ipopt, grad_residual_ipopt, infeasibility_ipopt, dual_infeasibility_ipopt, complementarity_ipopt, min_eig_ipopt = compute_metrics(Matrix(P), q, Matrix(A), b, r, x_ipopt, multipliers_ipopt)
     catch e
         nothing
@@ -65,8 +66,10 @@ for file in files
     grad_residual = NaN; min_eig = NaN; multipliers = Float64[];
     complementarity = NaN; dual_infeasibility = NaN
     try
-        t = @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
-        t = @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, copy(x_init), verbosity=1, printing_interval=5000, max_iter=5000)
+        t = @elapsed x_init = find_feasible_point(A, b, r, r)
+        t += @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
+        t = @elapsed x_init = find_feasible_point(A, b, r, r)
+        t += @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
         f, grad_residual, infeasibility, dual_infeasibility, complementarity, min_eig = compute_metrics(P, q, A, b, r, x, multipliers)
     catch e
         nothing

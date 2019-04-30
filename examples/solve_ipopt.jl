@@ -2,7 +2,7 @@ using Ipopt
 using SparseArrays
 function solve_ipopt(P::AbstractMatrix, q, A::AbstractMatrix, b,
     r_max=Inf, r_min=-Inf, x_init=zeros(0);
-    max_iter=5000, print_level=0, bound_relax_factor=NaN)
+    max_iter=5000, print_level=0)
 
     n = size(P, 1)
     A_ = [A; ones(n)']
@@ -63,9 +63,6 @@ function solve_ipopt(P::AbstractMatrix, q, A::AbstractMatrix, b,
                 eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h)
     addOption(prob, "max_iter", max_iter)
     addOption(prob, "print_level", print_level)
-    if !isnan(bound_relax_factor)
-        addOption(prob, "bound_relax_factor", bound_relax_factor)
-    end
     if length(x_init) == n
         prob.x .= x_init
     end
@@ -79,7 +76,7 @@ end
 
 function solve_ipopt(P::SparseMatrixCSC, q, A::SparseMatrixCSC, b,
     r_max=Inf, r_min=-Inf, x_init=zeros(0);
-    max_iter=5000, print_level=0, bound_relax_factor=NaN)
+    max_iter=5000, print_level=0)
 
     # Ensure diagonal is present
     n = size(P, 1)
@@ -135,9 +132,6 @@ function solve_ipopt(P::SparseMatrixCSC, q, A::SparseMatrixCSC, b,
                 eval_f, eval_g, eval_grad_f, eval_jac_g, eval_h)
     addOption(prob, "max_iter", max_iter)
     addOption(prob, "print_level", print_level)
-    if !isnan(bound_relax_factor)
-        addOption(prob, "bound_relax_factor", bound_relax_factor)
-    end
     if length(x_init) == n
         prob.x .= x_init
     end
