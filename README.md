@@ -32,7 +32,7 @@ subject to  ‖x‖ ∈ [r_min, r_max]
             Ax ≤ b
 ```
 can be solved with
-```
+```julia
 solve(P, q, A, b, r, x_init; kwargs) -> x
 ```
 with **inputs** (`T` is any real numerical type):
@@ -49,29 +49,12 @@ to `2` (most verbose). Note that setting `verbosity=2` affects the algorithm's p
 * `max_iter=Inf`: Maximum number of iterations
 * `printing_interval::Int=50`.
 
-and **output** `x::Vector{T}`, the calculated optimizer.
+and **output** `x::Vector{T}`, the calculated optimizer, and `λ::Vector{T}` that contains the Lagrange multipliers of the linear inequalities and the norm constraint.
 
 ## Obtaining an initial feasible point
 
-An initial feasible point for the `‖x‖ ≤ r` can be obtained by solving the strongly-convex qp
+Finding an initial feasible point for the problem considered in the repository is in general intractable. However the following function from `examples/subproblems.jl`
+```julia
+find_feasible_point(A, b, r_min=0, r_max=Inf) -> x
 ```
-minimize    x'x
-subject to  Ax ≤ b
-```
-e.g. with a standard active-set method
-```
-using JuMP, Gurobi
-# Choose Gurobi's primal simplex method
-model = Model(solver=GurobiSolver(Presolve=0, Method=0))
-@variable(model, x[1:size(A, 2)])
-@constraint(model, A*x - b .<=0)
-@objective(model, dot(x, x), objective)
-status = JuMP.solve(model)
-
-x_min_radius = getvalue(x)  # Initial point to be passed to our solver
-```
-
-Finding an initial feasible point for the `‖x‖ = r` is NP-complete in general. However, one can attempt to obtain a feasible point as following:
-```
-ToDo: code from subproblems.jl
-```
+attempts to find a feasible point by first minimizing `x'x` and then maximizing `x'x ` over the polyhedron `Ax ≤ b`.
