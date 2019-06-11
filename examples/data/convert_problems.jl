@@ -12,7 +12,8 @@ function convert_problems(dataset)
 
     if dataset == "MASTSIF"
         dir = ENV["MASTSIF"]
-        savedir = string(working_dir, "./")
+        savedir = string(working_dir, "/")
+    else
         @assert false "Dataset name must be MASTSIF"
     end
     cd(dir)
@@ -119,15 +120,14 @@ end
 function find_closest_feasible_point(A, b, x0)
     m, n = size(A)
 
-    model = JuMP.Model()
-    setsolver(model, GurobiSolver(OutputFlag=0))
+    model = Model(with_optimizer(Gurobi.Optimizer))
     @variable(model, x[1:n])
-    @constraint(model, A*x .<= b)
     @objective(model, Min, dot(x - x0, x - x0))
-    status = JuMP.solve(model)
-    if status != :Optimal
+	@constraint(model, A*x .<= b)
+    optimize!(model)
+    if termination_status(model) != MOI.OPTIMAL
         @warn "Gurobi could not solve initial problem"
         @assert false
     end
-    return getvalue(x)
+    return value.(x)
 end
