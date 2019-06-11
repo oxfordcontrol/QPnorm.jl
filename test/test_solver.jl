@@ -1,6 +1,6 @@
-include("../src/eTRS.jl")
+include("../src/QPnorm.jl")
 include("../examples/subproblems.jl")
-using Main.eTRS
+using Main.QPnorm
 using Random, Test
 
 function optimality_metrics(P, q, A, b, r_min, r_max, x, λ)
@@ -48,7 +48,7 @@ tol = 1e-7
     b = randn(rng, m)
     r_min = 10.0; r_max = 20.0;
     x_init = find_feasible_point(A, b, r_min, r_max)
-    x, λ = Main.eTRS.solve(P, q, A, b, x_init, r_min=r_min, r_max=r_max, printing_interval=100)
+    x, λ = Main.QPnorm.solve(P, q, A, b, x_init, r_min=r_min, r_max=r_max, printing_interval=100)
     f, grad, inf, dinf, compl, min_eig = optimality_metrics(P, q, A, b, r_min, r_max, x, λ)
     @test grad < tol
     @test inf < tol

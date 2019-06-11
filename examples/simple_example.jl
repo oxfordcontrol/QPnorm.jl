@@ -1,5 +1,5 @@
 include("./subproblems.jl")
-using eTRS
+using QPnorm
 using Random
 
 rng = MersenneTwister(123)

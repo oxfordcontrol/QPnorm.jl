@@ -1,27 +1,34 @@
-# QPnorm.jl: Solving Trust Region Subproblems with Inequality Constraints
+# QPnorm.jl: Solving Quadratic Problems with a norm constraint
 
 This is an active-set algorithm for solving problems of the form
 ```
 minimize    ½x'Px + q'x
-subject to  ‖x‖ ≤ r
+subject to  ‖x‖ ∈ [r_min, r_max]
             Ax ≤ b
 ```
-where `x` in the `n-`dimensional variable and `P` is a general symmetric (definite/indefinite) matrix.
+where `x` in the `n-`dimensional variable and `P` is a symmetric (definite/indefinite) matrix and `‖.‖` is the 2-norm.
+
+This repository is the official implementation of the [following paper](https://arxiv.org/abs/1906.04022):
+```
+Rontsis N., Goulart P.J., & Nakatsukasa, Y.
+An active-set algorithm for norm constrained quadratic problems
+Preprint in Arxiv
+```
 
 ## Installation
 The solver can be installed by running
 ```
-add https://github.com/oxfordcontrol/eTRS.jl
+add https://github.com/oxfordcontrol/QPnorm.jl
 ```
 in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1).
 
-This package is heavily based and requires [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl).
+This package is based on [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl).
 
 ## Usage
 Problems of the form
 ```
 minimize    ½x'Px + q'x
-subject to  ‖x‖ ≤ r
+subject to  ‖x‖ ∈ [r_min, r_max]
             Ax ≤ b
 ```
 can be solved with
@@ -32,28 +39,17 @@ with **inputs** (`T` is any real numerical type):
 
 * `P::Matrix{T}`: the quadratic cost;
 * `q::Vector{T}`: the linear cost;
-* `A::Matrix{T}` and `b::AbstractVector{T}`: the constraints;
-* `r::T` the radius; and
+* `A::Matrix{T}` and `b::AbstractVector{T}`: the linear constraints;
+* `r_min::T=zero(T)` and `r_max::T=T(Inf)`: the 2-norm bounds
 * `x_init::Vector{T}`: the initial, [feasible](#obtaining-an-initial-feasible-point) point
 
 **keywords** (optional):
 * `verbosity::Int=1` the verbosity of the solver ranging from `0` (no output)
 to `2` (most verbose). Note that setting `verbosity=2` affects the algorithm's performance.
+* `max_iter=Inf`: Maximum number of iterations
 * `printing_interval::Int=50`.
 
 and **output** `x::Vector{T}`, the calculated optimizer.
-
-### Constant norm problems
-```
-minimize    ½x'Px + q'x
-subject to  ‖x‖ = r
-            Ax ≤ b
-```
-can be solved with
-```
-solve_boundary(P, q, A, b, r, x_init; kwargs) -> x
-```
-with inputs identical to `solve(···)`.
 
 ## Obtaining an initial feasible point
 

@@ -4,7 +4,7 @@ using JLD2, FileIO
 using JuMP
 using Glob
 using SparseArrays
-using eTRS
+using QPnorm
 using DataFrames
 using CSV
 include("./solve_ipopt.jl")
@@ -89,8 +89,8 @@ for file in files[1:end]
     complementarity = NaN; dual_infeasibility = NaN
     P = Matrix(P); A = Matrix(A)
     try
-        t = @elapsed x, multipliers = eTRS.solve(P, q, A, b, copy(x_init), r_max=r, verbosity=1, printing_interval=5000, max_iter=5000)
-        t = @elapsed x, multipliers = eTRS.solve(P, q, A, b, copy(x_init), r_max=r, verbosity=1, printing_interval=5000, max_iter=5000)
+        t = @elapsed x, multipliers = QPnorm.solve(P, q, A, b, copy(x_init), r_max=r, verbosity=1, printing_interval=5000, max_iter=5000)
+        t = @elapsed x, multipliers = QPnorm.solve(P, q, A, b, copy(x_init), r_max=r, verbosity=1, printing_interval=5000, max_iter=5000)
         # inactive_set = multipliers .!== 0.0
         f, grad_residual, infeasibility, dual_infeasibility, complementarity, min_eig = compute_metrics(P, q, A, b, r, x, multipliers)
     catch e

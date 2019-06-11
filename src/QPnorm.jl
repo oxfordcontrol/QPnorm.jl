@@ -1,6 +1,6 @@
 __precompile__(true)
 
-module eTRS
+module QPnorm
 
 using LinearAlgebra
 using Polynomials
@@ -12,9 +12,9 @@ using SparseArrays
 using CSV
 
 include("algebra.jl")
-include("extended_trs_boundary.jl")
+include("qp_norm_boundary.jl")
 include("printing.jl")
-include("extended_trs.jl")
+include("qp_norm.jl")
 export solve
 
 end

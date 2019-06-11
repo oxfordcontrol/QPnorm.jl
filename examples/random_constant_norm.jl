@@ -1,6 +1,6 @@
 include("./subproblems.jl")
 include("./solve_ipopt.jl")
-using eTRS
+using QPnorm
 using Random
 using DataFrames, CSV
 
@@ -67,9 +67,9 @@ for dimension in dimensions
     complementarity = NaN; dual_infeasibility = NaN
     try
         t = @elapsed x_init = find_feasible_point(A, b, r, r)
-        t += @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
+        t += @elapsed x, multipliers = QPnorm.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
         t = @elapsed x_init = find_feasible_point(A, b, r, r)
-        t += @elapsed x, multipliers = eTRS.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
+        t += @elapsed x, multipliers = QPnorm.solve_boundary(P, q, A, b, r, x_init, verbosity=1, printing_interval=5000, max_iter=5000)
         f, grad_residual, infeasibility, dual_infeasibility, complementarity, min_eig = compute_metrics(P, q, A, b, r, x, multipliers)
     catch e
         nothing
