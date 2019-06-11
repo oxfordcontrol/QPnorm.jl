@@ -1,4 +1,4 @@
-# eTRS.jl: Solving Trust Region Subproblems with Inequality Constraints
+# QPnorm.jl: Solving Trust Region Subproblems with Inequality Constraints
 
 This is an active-set algorithm for solving problems of the form
 ```
