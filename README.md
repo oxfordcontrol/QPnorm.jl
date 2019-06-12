@@ -16,8 +16,8 @@ where `x` in the `n-`dimensional variable and `P` is a symmetric (definite/indef
 ## Installation
 This repository is based on [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl). First install these two dependencies by running 
 ```
-add https://github.com/oxfordcontrol/TRS.jl
-add https://github.com/oxfordcontrol/GeneralQP.jl
+add https://github.com/oxfordcontrol/TRS.jl#0a9b641
+add https://github.com/oxfordcontrol/GeneralQP.jl#4c74666
 ```
 in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1) and then install this repository by running
 ```
