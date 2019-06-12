@@ -1,7 +1,3 @@
-using LinearAlgebra
-using JuMP, CPLEX, GeneralQP
-using Polynomials
-
 function find_feasible_point(A::Matrix{T}, b::Vector{T}, r_min::T=zero(T), r_max::T=T(Inf)) where T
 	# Attempts to solve the feasibility problem
 	# find       x

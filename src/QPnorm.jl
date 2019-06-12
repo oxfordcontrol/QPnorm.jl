@@ -15,6 +15,7 @@ include("algebra.jl")
 include("qp_norm_boundary.jl")
 include("printing.jl")
 include("qp_norm.jl")
-export solve
+include("find_feasible_point.jl")
+export solve, find_feasible_point
 
 end
