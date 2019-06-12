@@ -1,6 +1,11 @@
 # QPnorm.jl: Solving Quadratic Problems with a norm constraint
-
-This is an active-set algorithm for solving problems of the form
+This repository is the official `Julia` implementation of the [following paper](https://arxiv.org/abs/1906.04022):
+```
+Rontsis N., Goulart P.J., & Nakatsukasa, Y.
+An active-set algorithm for norm constrained quadratic problems
+Preprint in Arxiv
+```
+i.e. an active-set algorithm for solving problems of the form
 ```
 minimize    ½x'Px + q'x
 subject to  ‖x‖ ∈ [r_min, r_max]
@@ -8,21 +13,16 @@ subject to  ‖x‖ ∈ [r_min, r_max]
 ```
 where `x` in the `n-`dimensional variable and `P` is a symmetric (definite/indefinite) matrix and `‖.‖` is the 2-norm.
 
-This repository is the official implementation of the [following paper](https://arxiv.org/abs/1906.04022):
-```
-Rontsis N., Goulart P.J., & Nakatsukasa, Y.
-An active-set algorithm for norm constrained quadratic problems
-Preprint in Arxiv
-```
-
 ## Installation
-The solver can be installed by running
+This repository is based on [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl). First install these two dependencies by running 
+```
+add https://github.com/oxfordcontrol/TRS.jl
+add https://github.com/oxfordcontrol/GeneralQP.jl
+```
+in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1) and then install this repository by running
 ```
 add https://github.com/oxfordcontrol/QPnorm.jl
 ```
-in [Julia's Pkg REPL mode](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html#Getting-Started-1).
-
-This package is based on [TRS.jl](https://github.com/oxfordcontrol/TRS.jl) and [GeneralQP.jl](https://github.com/oxfordcontrol/GeneralQP.jl).
 
 ## Usage
 Problems of the form
@@ -53,8 +53,11 @@ and **output** `x::Vector{T}`, the calculated optimizer, and `λ::Vector{T}` tha
 
 ## Obtaining an initial feasible point
 
-Finding an initial feasible point for the problem considered in the repository is in general intractable. However the following function from `examples/subproblems.jl`
+Finding an initial feasible point for the problem considered in the repository is in general ''NP-Complete''. However the following function
 ```julia
 find_feasible_point(A, b, r_min=0, r_max=Inf) -> x
 ```
-attempts to find a feasible point by first minimizing `x'x` and then maximizing `x'x ` over the polyhedron `Ax ≤ b`.
+attempts to find a feasible point by first minimizing `x'x` and then maximizing `x'x` over the polyhedron `Ax ≤ b`.
+
+## Reproducing the numerical examples from the [paper](https://arxiv.org/abs/1906.04022)
+The code for reproducing the numerical examples from the paper is in the folder `examples`, except for the sparse-pca which is in the dedicated branch [`pca`](https://github.com/oxfordcontrol/QPnorm.jl/tree/pca).

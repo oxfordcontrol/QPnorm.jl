@@ -29,7 +29,7 @@ function convert_problems(dataset)
 
     try
         files = sort(filter_problems(savedir))
-        start_idx = 184
+        start_idx = 1
         files = files[start_idx:end]
         counter = start_idx
         for file in files
