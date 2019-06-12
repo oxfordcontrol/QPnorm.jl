@@ -55,7 +55,7 @@ mutable struct Data{T, Tf}
 
     function Data(S::Tf, gamma::T, x_init::Vector{T}; kwargs...) where {T, Tf}
         nonzero_indices = findall(x_init .>= 1e-9)
-        @time H = FlexibleHessian(S, nonzero_indices)
+        H = FlexibleHessian(S, nonzero_indices)
         return Data(S, H, gamma, x_init; kwargs...)
     end
 

@@ -74,7 +74,8 @@ end
 
 function binary_search(S, nz, Y=zeros(0, 0); verbosity=1)
     # return sparsify(randn(size(S, 1)), nz), 1 # Dummy output for debbuging
-    @show @elapsed x_init, H = eTRS.get_initial_guess(S, Int(nz); Y=Y)
+    t_init = @elapsed x_init, H = QPnorm.get_initial_guess(S, Int(nz); Y=Y)
+    println("Time required by the initialization step: ", t_init)
     println("Initial variance:", dot(x_init, S*sparse(x_init)))
     H = nothing
     high = norm(x_init, 1)
@@ -83,16 +84,17 @@ function binary_search(S, nz, Y=zeros(0, 0); verbosity=1)
     n = length(x_init)
     x_warm = x_init
     max_iter = 30
+    t = 0
     for i = 1:max_iter
         gamma = (high - low)/2 + low
-        y, data = eTRS.sparse_pca(S, gamma, x_warm, H; Y=Y, verbosity=verbosity, printing_interval=5000, max_iter=10000);
+        t += @elapsed y, data = QPnorm.sparse_pca(S, gamma, x_warm, H; Y=Y, verbosity=verbosity, printing_interval=5000, max_iter=10000);
         H = data.H
         x_warm = data.x[1:n] - data.x[n+1:end]
         nonzeros = sum(abs.(y) .> 1e-7)
         println("Nonzeros: ", nonzeros, " γ: [", high, ", ", low, "]")
         if nonzeros == nz || i == max_iter
             println("Found at iteration:", i)
-            return y, data
+            return y, data, t
         elseif nonzeros > nz
             high = gamma
         elseif nonzeros < nz

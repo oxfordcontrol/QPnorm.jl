@@ -5,7 +5,7 @@ D = D./max(max(D));
 means = mean(D, 1)';
 
 x = zeros(0);
-nz = 50; % Desired nonzeros
+nz = 30; % Desired nonzeros
 % init_type = "default_tpower";
 init_type = "truncutated_eigenvector";
 

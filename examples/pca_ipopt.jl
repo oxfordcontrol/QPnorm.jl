@@ -1,8 +1,8 @@
 using JuMP, Ipopt, Polynomials, LinearAlgebra, Statistics, Arpack
 using SparseArrays
 using LinearMaps
-include("../src/eTRS.jl")
-using Main.eTRS
+include("../src/QPnorm.jl")
+using Main.QPnorm
 using Random
 
 rng = MersenneTwister(123)
@@ -10,7 +10,7 @@ dim = 15000
 points = 300
 X = randn(rng, points, dim);
 X .-= mean(X, dims=1)
-S = eTRS.CovarianceMatrix(X)
+S = QPnorm.CovarianceMatrix(X)
 # S = Symmetric(X'*X)
 
 function pca_ipopt_implicit(D::Matrix{T}, x_init::Vector{T}, γ::T) where {T}

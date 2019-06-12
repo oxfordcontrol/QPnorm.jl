@@ -1,6 +1,6 @@
 __precompile__(true)
 
-module eTRS
+module QPnorm
 
 using LinearAlgebra, SparseArrays
 using Polynomials

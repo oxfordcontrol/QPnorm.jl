@@ -27,7 +27,7 @@ function sparsify_nonnegative(S, x::Vector{Float64}, nnz::Int)
 end
 
 function polish_nonzero!(data)
-    polished_data = eTRS.solve_sparse_pca(-Matrix(data.H.H_small), # Covariance matrix
+    polished_data = QPnorm.solve_sparse_pca(-Matrix(data.H.H_small), # Covariance matrix
         Float64(length(data.x_nonzero)), # 1-norm constraint: we set it large enough so as it's inactive
         copy(data.x_nonzero); # Initial point
         printing_interval=5000,
@@ -53,7 +53,8 @@ function get_initial_guess_nonnegative(S, nnz; Y=zeros(0, 0))
 end
 
 function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=1)
-    @show @elapsed x_init = eTRS.get_initial_guess_nonnegative(S, nz; Y=Y)
+    t_init = @elapsed x_init = QPnorm.get_initial_guess_nonnegative(S, nz; Y=Y)
+    println("Time required by the initialization step: ", t_init)
     println("Initial variance:", dot(x_init, S*sparse(x_init)))
     H = nothing
     high = norm(x_init, 1)
@@ -62,9 +63,10 @@ function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=1)
     n = length(x_init)
     x_warm = x_init
     max_iter = 30
+    t = 0
     for i = 1:max_iter
         gamma = (high - low)/2 + low
-        data = eTRS.solve_sparse_pca(S, gamma, x_warm, H; W=Y, verbosity=verbosity, printing_interval=5000, max_iter=10000);
+        t += @elapsed data = QPnorm.solve_sparse_pca(S, gamma, x_warm, H; W=Y, verbosity=verbosity, printing_interval=5000, max_iter=10000);
         x_warm = copy(data.x)
         H = data.H
         nonzeros = sum(abs.(data.x) .> 1e-7)
@@ -72,7 +74,7 @@ function binary_search_nonnegative(S, nz, Y=zeros(0, 0); verbosity=1)
         if nonzeros == nz || i == max_iter
             println("Found at iteration:", i)
             y = polish_nonzero!(data)
-            return y, data
+            return y, data, t
         elseif nonzeros > nz
             high = gamma
         elseif nonzeros < nz

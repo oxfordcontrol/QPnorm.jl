@@ -5,7 +5,7 @@ D = D./max(max(D));
 means = mean(D, 1)';
 
 x = zeros(0);
-nz = 50; % Desired nonzeros
+nz = 30; % Desired nonzeros
 
 l_deflate = zeros(size(D, 1), 0);
 r_deflate = zeros(size(D, 2), 0);
