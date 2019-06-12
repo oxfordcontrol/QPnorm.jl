@@ -1,4 +1,3 @@
-include("./subproblems.jl")
 include("./solve_ipopt.jl")
 using QPnorm
 using Random

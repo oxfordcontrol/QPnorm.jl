@@ -1,3 +1,6 @@
+using JuMP: @variable, @constraint, @objective, Model, with_optimizer, optimize!, value
+using CPLEX
+
 function find_feasible_point(A::Matrix{T}, b::Vector{T}, r_min::T=zero(T), r_max::T=T(Inf)) where T
 	# Attempts to solve the feasibility problem
 	# find       x
